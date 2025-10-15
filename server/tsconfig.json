@@ -1,0 +1,57 @@
+{
+    "compilerOptions": {
+        /* Base Options */
+        "target": "ES2022",
+        "module": "ESNext",
+        "moduleResolution": "node",
+        "allowSyntheticDefaultImports": true,
+        "esModuleInterop": true,
+        "allowImportingTsExtensions": false,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        /* Strict Type Checking */
+        "strict": true,
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "noUncheckedIndexedAccess": true,
+        /* Output */
+        "outDir": "./dist",
+        "rootDir": "./",
+        "removeComments": true,
+        "emitDecoratorMetadata": true,
+        "experimentalDecorators": true,
+        /* Source Maps & Debugging */
+        "sourceMap": true,
+        "declaration": true,
+        "declarationMap": true,
+        /* Library */
+        "lib": [
+            "ES2022"
+        ],
+        "types": [
+            "node"
+        ],
+        /* Advanced Options */
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "incremental": true,
+        "tsBuildInfoFile": "./dist/.tsbuildinfo"
+    },
+    "include": [
+        "**/*.ts",
+        "**/*.tsx"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        "**/*.test.ts",
+        "**/*.spec.ts"
+    ],
+    "ts-node": {
+        "esm": true,
+        "experimentalSpecifierResolution": "node"
+    }
+}
