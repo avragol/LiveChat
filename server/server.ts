@@ -12,7 +12,7 @@ const io = new Server(httpServer, {
   cors: {
     origin: [
       'http://localhost:5173', // Vite default port
-      'https://livechat-0im1.onrender.com/' // Added Render address
+      'https://livechat-0im1.onrender.com' // Added Render address
     ],
     methods: ['GET', 'POST']
   }
