@@ -38,6 +38,7 @@ interface JoinRoomData {
 // In-memory storage
 const users = new Map<string, User>();
 const messages = new Map<string, Message[]>(); // room -> messages
+const rooms = new Set<string>(['General']); // Start with General as default room
 
 // Helper functions
 const getUsersInRoom = (room: string): User[] => {
@@ -54,9 +55,17 @@ const addMessage = (message: Message): void => {
   messages.set(message.room, roomMessages);
 };
 
+// Broadcast room list to all clients
+const updateRoomList = (): void => {
+  io.emit('room-list-update', Array.from(rooms));
+};
+
 // Socket.IO connection handling
 io.on('connection', (socket: Socket) => {
   console.log('User connected:', socket.id);
+
+  // Send current room list to newly connected client
+  socket.emit('room-list-update', Array.from(rooms));
 
   // Join room
   socket.on('join_room', ({ username, room }: JoinRoomData) => {
@@ -118,6 +127,30 @@ io.on('connection', (socket: Socket) => {
       username: user.username,
       isTyping
     });
+  });
+
+  // Handle room creation
+  socket.on('create-room', (roomName: string) => {
+    // Validate room name
+    if (!roomName || roomName.trim() === '') {
+      socket.emit('room-creation-error', 'Room name cannot be empty');
+      return;
+    }
+
+    const trimmedRoomName = roomName.trim();
+
+    // Check if room already exists
+    if (rooms.has(trimmedRoomName)) {
+      socket.emit('room-creation-error', 'Room already exists');
+      return;
+    }
+
+    // Add new room
+    rooms.add(trimmedRoomName);
+    console.log(`New room created: ${trimmedRoomName}`);
+
+    // Broadcast updated room list to all clients
+    updateRoomList();
   });
 
   // Disconnect

@@ -172,6 +172,50 @@ body {
     color: #374151;
 }
 
+.create-room-section {
+    padding: 16px 20px;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.create-room-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.create-room-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+.create-room-button {
+    width: 100%;
+    background: #10b981;
+    color: white;
+    border: none;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.create-room-button:hover:not(:disabled) {
+    background: #059669;
+}
+
+.create-room-button:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
 .rooms-list {
     flex: 1;
     overflow-y: auto;

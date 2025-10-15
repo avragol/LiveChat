@@ -32,13 +32,3 @@ export interface TypingData {
   username: string;
   isTyping: boolean;
 }
-
-// Available rooms
-export const ROOMS = [
-  { id: 'general', name: 'כללי', emoji: '💬' },
-  { id: 'tech', name: 'טכנולוגיה', emoji: '💻' },
-  { id: 'random', name: 'אקראי', emoji: '🎲' },
-  { id: 'gaming', name: 'גיימינג', emoji: '🎮' }
-] as const;
-
-export type RoomId = typeof ROOMS[number]['id'];

@@ -5,13 +5,6 @@ import GoogleAuth from './GoogleAuth';
 
 const SOCKET_URL = 'http://localhost:3001';
 
-const ROOMS = [
-  { id: 'general', name: 'General', emoji: '💬' },
-  { id: 'tech', name: 'Technology', emoji: '💻' },
-  { id: 'random', name: 'Random', emoji: '🎲' },
-  { id: 'gaming', name: 'Gaming', emoji: '🎮' }
-];
-
 interface GoogleUser {
   name: string;
   email: string;
@@ -29,6 +22,8 @@ export default function ChatApp() {
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [isConnected, setIsConnected] = useState(false);
+  const [rooms, setRooms] = useState<string[]>([]);
+  const [newRoomName, setNewRoomName] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
 
@@ -66,6 +61,14 @@ export default function ChatApp() {
       } else {
         setTypingUsers(prev => prev.filter(u => u !== typingUser));
       }
+    });
+
+    newSocket.on('room-list-update', (updatedRooms: string[]) => {
+      setRooms(updatedRooms);
+    });
+
+    newSocket.on('room-creation-error', (error: string) => {
+      alert(error);
     });
 
     setSocket(newSocket);
@@ -119,11 +122,18 @@ export default function ChatApp() {
     }, 1000);
   };
 
-  const switchRoom = (roomId: string) => {
-    if (socket && roomId !== currentRoom) {
-      setCurrentRoom(roomId);
-      socket.emit('join_room', { username, room: roomId });
+  const switchRoom = (roomName: string) => {
+    if (socket && roomName !== currentRoom) {
+      setCurrentRoom(roomName);
+      socket.emit('join_room', { username, room: roomName });
       setMessages([]);
+    }
+  };
+
+  const handleCreateRoom = () => {
+    if (socket && newRoomName.trim()) {
+      socket.emit('create-room', newRoomName.trim());
+      setNewRoomName('');
     }
   };
 
@@ -137,8 +147,8 @@ export default function ChatApp() {
     setGoogleUser(user);
     setUsername(user.name);
     setIsAuthenticated(true);
-    // מעבר ישר לחדר הראשון אחרי ההתחברות
-    setCurrentRoom('general');
+    // מעבר ישר לחדר General אחרי ההתחברות
+    setCurrentRoom('General');
   };
 
   const handleGoogleError = () => {
@@ -166,8 +176,6 @@ export default function ChatApp() {
     setUsers([]);
     setTypingUsers([]);
     setMessageInput('');
-
-    // לא סוגרים את הsocket - נשאיר אותו מחובר לחיבור הבא
   };
 
   if (!isAuthenticated) {
@@ -186,8 +194,6 @@ export default function ChatApp() {
     );
   }
 
-  const currentRoomData = ROOMS.find(r => r.id === currentRoom) || ROOMS[0];
-
   return (
     <div className="chat-container">
       <div className="sidebar">
@@ -195,15 +201,33 @@ export default function ChatApp() {
           <h2 className="sidebar-title">Rooms</h2>
         </div>
 
+        <div className="create-room-section">
+          <input
+            type="text"
+            value={newRoomName}
+            onChange={(e) => setNewRoomName(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleCreateRoom()}
+            className="create-room-input"
+            placeholder="New room name..."
+          />
+          <button
+            onClick={handleCreateRoom}
+            disabled={!newRoomName.trim()}
+            className="create-room-button"
+          >
+            ➕ Create
+          </button>
+        </div>
+
         <div className="rooms-list">
-          {ROOMS.map(room => (
+          {rooms.map(room => (
             <button
-              key={room.id}
-              onClick={() => switchRoom(room.id)}
-              className={`room-item ${currentRoom === room.id ? 'active' : ''}`}
+              key={room}
+              onClick={() => switchRoom(room)}
+              className={`room-item ${currentRoom === room ? 'active' : ''}`}
             >
-              <span className="room-emoji">{room.emoji}</span>
-              <span className="room-name">{room.name}</span>
+              <span className="room-emoji">{room === 'General' ? '💬' : '📁'}</span>
+              <span className="room-name">{room}</span>
             </button>
           ))}
         </div>
@@ -247,9 +271,9 @@ export default function ChatApp() {
       <div className="main-chat">
         <div className="chat-header">
           <div className="header-info">
-            <span className="room-emoji">{currentRoomData?.emoji}</span>
+            <span className="room-emoji">{currentRoom === 'General' ? '💬' : '📁'}</span>
             <div>
-              <h1 className="room-title">{currentRoomData?.name}</h1>
+              <h1 className="room-title">{currentRoom}</h1>
               <p className="username">@{username}</p>
             </div>
           </div>
