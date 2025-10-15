@@ -10,7 +10,10 @@ app.use(cors());
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: 'http://localhost:5173', // Vite default port
+    origin: [
+      'http://localhost:5173', // Vite default port
+      'https://livechat-0im1.onrender.com/' // Added Render address
+    ],
     methods: ['GET', 'POST']
   }
 });

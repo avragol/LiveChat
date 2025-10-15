@@ -3,7 +3,7 @@ import { io } from 'socket.io-client';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import GoogleAuth from './GoogleAuth';
 
-const SOCKET_URL = 'http://localhost:3001';
+const SOCKET_URL = (import.meta as any).env?.VITE_SOCKET_URL || 'http://localhost:3001';
 
 interface GoogleUser {
   name: string;
