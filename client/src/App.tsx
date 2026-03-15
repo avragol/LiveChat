@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { io } from 'socket.io-client';
+import { io, Socket } from 'socket.io-client';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import GoogleAuth from './GoogleAuth';
+import { Message, User, UserJoinedData, UserLeftData, TypingData } from './types';
 
-const SOCKET_URL = (import.meta as any).env?.VITE_SOCKET_URL || 'http://localhost:3001';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
+const MAX_MESSAGE_LENGTH = 500;
 
 interface GoogleUser {
   name: string;
@@ -12,13 +14,13 @@ interface GoogleUser {
 }
 
 export default function ChatApp() {
-  const [socket, setSocket] = useState<any>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [username, setUsername] = useState('');
   const [currentRoom, setCurrentRoom] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [users, setUsers] = useState<any[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [isConnected, setIsConnected] = useState(false);
@@ -32,30 +34,32 @@ export default function ChatApp() {
 
     newSocket.on('connect', () => setIsConnected(true));
     newSocket.on('disconnect', () => setIsConnected(false));
-    newSocket.on('previous_messages', (msgs: any[]) => setMessages(msgs));
-    newSocket.on('new_message', (msg: any) => setMessages(prev => [...prev, msg]));
+    newSocket.on('previous_messages', (msgs: Message[]) => setMessages(msgs));
+    newSocket.on('new_message', (msg: Message) => setMessages(prev => [...prev, msg]));
 
-    newSocket.on('user_joined', ({ username: joinedUser, users: updatedUsers }: any) => {
+    newSocket.on('user_joined', ({ username: joinedUser, users: updatedUsers }: UserJoinedData) => {
       setUsers(updatedUsers);
       setMessages(prev => [...prev, {
         id: `system-${Date.now()}`,
         username: 'System',
         text: `${joinedUser} joined the room`,
+        room: currentRoom,
         timestamp: Date.now()
       }]);
     });
 
-    newSocket.on('user_left', ({ username: leftUser, users: updatedUsers }: any) => {
+    newSocket.on('user_left', ({ username: leftUser, users: updatedUsers }: UserLeftData) => {
       setUsers(updatedUsers);
       setMessages(prev => [...prev, {
         id: `system-${Date.now()}`,
         username: 'System',
         text: `${leftUser} left the room`,
+        room: currentRoom,
         timestamp: Date.now()
       }]);
     });
 
-    newSocket.on('user_typing', ({ username: typingUser, isTyping }: any) => {
+    newSocket.on('user_typing', ({ username: typingUser, isTyping }: TypingData) => {
       if (isTyping) {
         setTypingUsers(prev => [...new Set([...prev, typingUser])]);
       } else {
@@ -89,11 +93,10 @@ export default function ChatApp() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-
-
   const handleSendMessage = () => {
     if (messageInput.trim() && socket) {
-      socket.emit('send_message', messageInput.trim());
+      const trimmed = messageInput.trim().slice(0, MAX_MESSAGE_LENGTH);
+      socket.emit('send_message', trimmed);
       setMessageInput('');
       socket.emit('typing', false);
       if (typingTimeoutRef.current) {
@@ -110,7 +113,8 @@ export default function ChatApp() {
   };
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setMessageInput(e.target.value);
+    const value = e.target.value.slice(0, MAX_MESSAGE_LENGTH);
+    setMessageInput(value);
     if (!socket) return;
 
     socket.emit('typing', true);
@@ -147,7 +151,6 @@ export default function ChatApp() {
     setGoogleUser(user);
     setUsername(user.name);
     setIsAuthenticated(true);
-    // מעבר ישר לחדר General אחרי ההתחברות
     setCurrentRoom('General');
   };
 
@@ -157,17 +160,12 @@ export default function ChatApp() {
 
   const handleLogout = () => {
     const confirmLogout = window.confirm('Are you sure you want to logout? You will be disconnected from the chat.');
+    if (!confirmLogout) return;
 
-    if (!confirmLogout) {
-      return;
-    }
-
-    // יציאה מהחדר אם מחובר
     if (socket && currentRoom && username) {
       socket.emit('leave_room');
     }
 
-    // איפוס כל המצבים
     setIsAuthenticated(false);
     setGoogleUser(null);
     setUsername('');
@@ -180,7 +178,7 @@ export default function ChatApp() {
 
   if (!isAuthenticated) {
     return (
-      <GoogleOAuthProvider clientId={(import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || ''}>
+      <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || ''}>
         <div className="login-container">
           <div className="login-card">
             <h1 className="login-title">Real-Time Chat</h1>
@@ -235,7 +233,7 @@ export default function ChatApp() {
         <div className="users-section">
           <div className="users-title">Online users: {users.length}</div>
           <div>
-            {users.map((user: any) => (
+            {users.map((user: User) => (
               <div key={user.id} className="user-item">
                 <div className="status-dot" />
                 <span>{user.username}</span>
@@ -293,37 +291,33 @@ export default function ChatApp() {
         </div>
 
         <div className="messages-area">
-          {messages.map((msg: any) => (
+          {messages.map((msg: Message) => (
             <div
               key={msg.id}
               className={`message ${msg.username === 'System' ? 'system' : ''}`}
             >
               {msg.username === 'System' ? (
-                <div className="system-message">
-                  {msg.text}
-                </div>
+                <div className="system-message">{msg.text}</div>
               ) : (
                 <div className={`message-bubble ${msg.username === username ? 'own' : 'other'}`}>
                   {msg.username !== username && (
                     <div className="message-sender">{msg.username}</div>
                   )}
                   <div className="message-text">{msg.text}</div>
-                  <div className="message-time">
-                    {formatTime(msg.timestamp)}
-                  </div>
+                  <div className="message-time">{formatTime(msg.timestamp)}</div>
                 </div>
               )}
             </div>
           ))}
           {typingUsers.length > 0 && (
             <div className="typing-indicator">
-              {typingUsers.join(', ')} is typing...
+              {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
             </div>
           )}
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="message-input-container">
+        <div className="message-input-area">
           <input
             type="text"
             value={messageInput}
@@ -331,7 +325,9 @@ export default function ChatApp() {
             onKeyPress={handleKeyPress}
             className="message-input"
             placeholder="Type a message..."
+            maxLength={MAX_MESSAGE_LENGTH}
           />
+          <div className="char-counter">{messageInput.length}/{MAX_MESSAGE_LENGTH}</div>
           <button
             onClick={handleSendMessage}
             disabled={!messageInput.trim()}

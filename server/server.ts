@@ -11,8 +11,8 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     origin: [
-      'http://localhost:5173', // Vite default port
-      'https://livechat-0im1.onrender.com' // Added Render address
+      'http://localhost:5173',
+      'https://livechat-0im1.onrender.com'
     ],
     methods: ['GET', 'POST']
   }
@@ -38,10 +38,19 @@ interface JoinRoomData {
   room: string;
 }
 
+// Constants
+const MAX_MESSAGE_LENGTH = 500;
+const MAX_ROOMS = 50;
+const RATE_LIMIT_WINDOW_MS = 5000; // 5 seconds
+const RATE_LIMIT_MAX_MESSAGES = 5; // max 5 messages per 5 seconds
+
 // In-memory storage
 const users = new Map<string, User>();
-const messages = new Map<string, Message[]>(); // room -> messages
-const rooms = new Set<string>(['General']); // Start with General as default room
+const messages = new Map<string, Message[]>();
+const rooms = new Set<string>(['General']);
+
+// Rate limiting: socket.id -> { count, windowStart }
+const rateLimits = new Map<string, { count: number; windowStart: number }>();
 
 // Helper functions
 const getUsersInRoom = (room: string): User[] => {
@@ -58,21 +67,43 @@ const addMessage = (message: Message): void => {
   messages.set(message.room, roomMessages);
 };
 
-// Broadcast room list to all clients
 const updateRoomList = (): void => {
   io.emit('room-list-update', Array.from(rooms));
+};
+
+// Rate limit check: returns true if allowed, false if blocked
+const checkRateLimit = (socketId: string): boolean => {
+  const now = Date.now();
+  const rl = rateLimits.get(socketId);
+
+  if (!rl || now - rl.windowStart > RATE_LIMIT_WINDOW_MS) {
+    rateLimits.set(socketId, { count: 1, windowStart: now });
+    return true;
+  }
+
+  if (rl.count >= RATE_LIMIT_MAX_MESSAGES) {
+    return false;
+  }
+
+  rl.count += 1;
+  return true;
 };
 
 // Socket.IO connection handling
 io.on('connection', (socket: Socket) => {
   console.log('User connected:', socket.id);
 
-  // Send current room list to newly connected client
   socket.emit('room-list-update', Array.from(rooms));
 
-  // Join room
   socket.on('join_room', ({ username, room }: JoinRoomData) => {
-    // Leave previous room if exists
+    // Basic input validation
+    if (!username || !room || username.trim() === '' || room.trim() === '') return;
+
+    // TODO: Validate Google ID token here for proper server-side authentication.
+    // The client sends the Google OAuth token — verify it using Google's tokeninfo endpoint
+    // or the google-auth-library package before trusting the username.
+    // Example: const ticket = await googleAuthClient.verifyIdToken({ idToken, audience: CLIENT_ID });
+
     const previousUser = users.get(socket.id);
     if (previousUser) {
       socket.leave(previousUser.room);
@@ -82,37 +113,39 @@ io.on('connection', (socket: Socket) => {
       });
     }
 
-    // Join new room
     socket.join(room);
 
-    const user: User = {
-      id: socket.id,
-      username,
-      room
-    };
+    const user: User = { id: socket.id, username: username.trim(), room };
     users.set(socket.id, user);
 
-    // Send previous messages to the user
     socket.emit('previous_messages', getRoomMessages(room));
 
-    // Notify room about new user
     io.to(room).emit('user_joined', {
-      username,
+      username: username.trim(),
       users: getUsersInRoom(room)
     });
 
     console.log(`${username} joined room: ${room}`);
   });
 
-  // Handle messages
   socket.on('send_message', (text: string) => {
     const user = users.get(socket.id);
     if (!user) return;
 
+    // Rate limiting
+    if (!checkRateLimit(socket.id)) {
+      socket.emit('rate-limit-error', 'You are sending messages too fast. Please slow down.');
+      return;
+    }
+
+    // Validate and sanitize message
+    if (typeof text !== 'string' || text.trim() === '') return;
+    const sanitizedText = text.trim().slice(0, MAX_MESSAGE_LENGTH);
+
     const message: Message = {
       id: `${Date.now()}-${socket.id}`,
       username: user.username,
-      text,
+      text: sanitizedText,
       room: user.room,
       timestamp: Date.now()
     };
@@ -121,7 +154,6 @@ io.on('connection', (socket: Socket) => {
     io.to(user.room).emit('new_message', message);
   });
 
-  // Handle typing indicator
   socket.on('typing', (isTyping: boolean) => {
     const user = users.get(socket.id);
     if (!user) return;
@@ -132,9 +164,7 @@ io.on('connection', (socket: Socket) => {
     });
   });
 
-  // Handle room creation
   socket.on('create-room', (roomName: string) => {
-    // Validate room name
     if (!roomName || roomName.trim() === '') {
       socket.emit('room-creation-error', 'Room name cannot be empty');
       return;
@@ -142,26 +172,27 @@ io.on('connection', (socket: Socket) => {
 
     const trimmedRoomName = roomName.trim();
 
-    // Check if room already exists
     if (rooms.has(trimmedRoomName)) {
       socket.emit('room-creation-error', 'Room already exists');
       return;
     }
 
-    // Add new room
+    if (rooms.size >= MAX_ROOMS) {
+      socket.emit('room-creation-error', `Maximum number of rooms (${MAX_ROOMS}) reached`);
+      return;
+    }
+
     rooms.add(trimmedRoomName);
     console.log(`New room created: ${trimmedRoomName}`);
-
-    // Broadcast updated room list to all clients
     updateRoomList();
   });
 
-  // Disconnect
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) {
       socket.leave(user.room);
       users.delete(socket.id);
+      rateLimits.delete(socket.id);
 
       io.to(user.room).emit('user_left', {
         username: user.username,
@@ -177,4 +208,3 @@ const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
