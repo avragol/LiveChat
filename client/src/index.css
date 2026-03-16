@@ -17,6 +17,21 @@ body {
     width: 100%;
 }
 
+
+/* ─────────────────────────────────────────
+   RTL Global
+───────────────────────────────────────── */
+html, body {
+    direction: rtl;
+    text-align: right;
+}
+
+/* Inputs and text areas keep their own RTL flow */
+input, textarea {
+    text-align: right;
+    direction: rtl;
+}
+
 /* ─────────────────────────────────────────
    Login Page
 ───────────────────────────────────────── */
@@ -63,7 +78,7 @@ body {
     width: 280px;
     min-width: 280px;
     background: #f9fafb;
-    border-right: 1px solid #e5e7eb;
+    border-left: 1px solid #e5e7eb;
     display: flex;
     flex-direction: column;
     transition: transform 0.3s ease;
@@ -155,7 +170,7 @@ body {
     gap: 12px;
     cursor: pointer;
     transition: background 0.2s;
-    text-align: left;
+    text-align: right;
 }
 
 .room-item:hover {
@@ -590,7 +605,7 @@ body {
         width: 80%;
         max-width: 300px;
         transform: translateX(100%);
-        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
+        box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
         z-index: 100;
     }
 
@@ -732,3 +747,4 @@ body {
     padding-bottom: max(20px, env(safe-area-inset-bottom));
   }
 }
+
