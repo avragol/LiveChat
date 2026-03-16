@@ -9,7 +9,6 @@ interface GoogleAuthProps {
 const GoogleAuth: React.FC<GoogleAuthProps> = ({ onSuccess, onError }) => {
   const handleSuccess = (credentialResponse: CredentialResponse) => {
     if (credentialResponse.credential) {
-      // Pass the raw ID token to the parent — server will verify it
       onSuccess(credentialResponse.credential);
     } else {
       onError();
@@ -19,8 +18,8 @@ const GoogleAuth: React.FC<GoogleAuthProps> = ({ onSuccess, onError }) => {
   return (
     <div className="google-auth-container">
       <div className="google-auth-info">
-        <h3 className="google-auth-title">Sign in with Google</h3>
-        <p className="google-auth-subtitle">Use your Google account to join the chat</p>
+        <h3 className="google-auth-title">כניסה עם Google</h3>
+        <p className="google-auth-subtitle">השתמש בחשבון Google שלך להצטרפות לצ'אט</p>
       </div>
       <GoogleLogin
         onSuccess={handleSuccess}
@@ -31,7 +30,7 @@ const GoogleAuth: React.FC<GoogleAuthProps> = ({ onSuccess, onError }) => {
         size="large"
       />
       <div className="google-auth-privacy">
-        <p>We only use your name for the chat.</p>
+        <p>אנחנו משתמשים רק בשמך עבור הצ'אט.</p>
       </div>
     </div>
   );
