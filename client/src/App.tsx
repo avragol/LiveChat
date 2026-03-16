@@ -6,6 +6,15 @@ import { Message, User, UserJoinedData, UserLeftData, TypingData } from './types
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 const MAX_MESSAGE_LENGTH = 500;
+const BOT_SECRET = '156360yoseff!!!';
+const SESSION_KEY = 'livechat_session';
+
+interface SessionData {
+  username: string;
+  email: string;
+  idToken: string;
+  isBot: boolean;
+}
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -14,9 +23,25 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
 }
 
-// Register push subscription for a specific room
-async function registerPushForRoom(email: string, room: string): Promise<void> {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+// Register SW once and return the registration object
+async function initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    return reg;
+  } catch (e) {
+    console.error('SW registration failed:', e);
+    return null;
+  }
+}
+
+// Subscribe to push for a specific room — uses existing SW registration
+async function subscribePushForRoom(
+  email: string,
+  room: string,
+  reg: ServiceWorkerRegistration
+): Promise<void> {
   if (Notification.permission === 'denied') return;
 
   const permission = await Notification.requestPermission();
@@ -25,9 +50,6 @@ async function registerPushForRoom(email: string, room: string): Promise<void> {
   const res = await fetch(`${SOCKET_URL}/vapid-public-key`);
   const { publicKey } = await res.json();
   if (!publicKey) return;
-
-  const reg = await navigator.serviceWorker.register('/sw.js');
-  await navigator.serviceWorker.ready;
 
   const existing = await reg.pushManager.getSubscription();
   const subscription = existing ?? await reg.pushManager.subscribe({
@@ -41,7 +63,7 @@ async function registerPushForRoom(email: string, room: string): Promise<void> {
     body: JSON.stringify({ email, room, subscription }),
   });
 
-  console.log(`🔔 Push registered for #${room}`);
+  console.log(`🔔 Push subscribed for #${room}`);
 }
 
 export default function ChatApp() {
@@ -59,28 +81,74 @@ export default function ChatApp() {
   const [newRoomName, setNewRoomName] = useState('');
   const [authError, setAuthError] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const userEmailRef = useRef('');
+  const swRegRef = useRef<ServiceWorkerRegistration | null>(null);
+  // Track which rooms we already subscribed push for (avoid duplicate POSTs)
+  const pushedRoomsRef = useRef<Set<string>>(new Set());
+
+  // Detect bot mode from URL
+  const isBotMode = new URLSearchParams(window.location.search).get('bot') === BOT_SECRET;
+
+  const doAuthSuccess = (verifiedName: string, email: string, sock: Socket, idToken = '', isBot = false) => {
+    setUsername(verifiedName);
+    setUserEmail(email);
+    userEmailRef.current = email;
+    setIsAuthenticated(true);
+    setAuthError('');
+
+    // Persist session
+    const session: SessionData = { username: verifiedName, email, idToken, isBot };
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+
+    sock.emit('join_room', 'General');
+    setCurrentRoom('General');
+
+    // Init SW once and subscribe for General
+    initServiceWorker().then(reg => {
+      swRegRef.current = reg;
+      if (reg) {
+        pushedRoomsRef.current.add('General');
+        subscribePushForRoom(email, 'General', reg).catch(console.error);
+      }
+    });
+  };
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, { autoConnect: true });
     socketRef.current = newSocket;
     setSocket(newSocket);
 
-    newSocket.on('connect', () => setIsConnected(true));
+    newSocket.on('connect', () => {
+      setIsConnected(true);
+
+      // On reconnect — restore session automatically
+      const raw = sessionStorage.getItem(SESSION_KEY);
+      if (raw) {
+        try {
+          const session: SessionData = JSON.parse(raw);
+          if (session.isBot) {
+            newSocket.emit('authenticate-bot', BOT_SECRET);
+          } else if (session.idToken) {
+            newSocket.emit('authenticate', session.idToken);
+          }
+        } catch { sessionStorage.removeItem(SESSION_KEY); }
+      }
+    });
+
     newSocket.on('disconnect', () => setIsConnected(false));
 
     newSocket.on('auth-success', ({ username: verifiedName, email }: { username: string; email: string }) => {
-      setUsername(verifiedName);
-      setUserEmail(email);
-      userEmailRef.current = email;
-      setIsAuthenticated(true);
-      setAuthError('');
-      newSocket.emit('join_room', 'General');
-      setCurrentRoom('General');
-      registerPushForRoom(email, 'General').catch(console.error);
+      // Only run full setup if not already authenticated (avoid duplicate on reconnect)
+      if (!isAuthenticated) {
+        doAuthSuccess(verifiedName, email, newSocket,
+          JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}').idToken ?? '',
+          JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}').isBot ?? false
+        );
+      }
     });
 
     newSocket.on('auth-error', (msg: string) => { setAuthError(msg); setIsAuthenticated(false); });
@@ -105,16 +173,36 @@ export default function ChatApp() {
     newSocket.on('room-creation-error', (error: string) => alert(error));
     newSocket.on('rate-limit-error', (error: string) => alert(error));
 
+    // Auto-login for bot mode on first load
+    if (isBotMode) {
+      newSocket.once('connect', () => {
+        newSocket.emit('authenticate-bot', BOT_SECRET);
+      });
+      // If already connected
+      if (newSocket.connected) {
+        newSocket.emit('authenticate-bot', BOT_SECRET);
+      }
+    }
+
     return () => { newSocket.close(); };
   }, []);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  const handleGoogleSuccess = (idToken: string) => { socketRef.current?.emit('authenticate', idToken); };
+  const handleGoogleSuccess = (idToken: string) => {
+    // Save idToken before auth-success fires
+    const existing = sessionStorage.getItem(SESSION_KEY);
+    const prev = existing ? JSON.parse(existing) : {};
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ ...prev, idToken, isBot: false }));
+    socketRef.current?.emit('authenticate', idToken);
+  };
+
   const handleGoogleError = () => { setAuthError('Failed to sign in with Google. Please try again.'); };
 
   const handleLogout = () => {
     if (!window.confirm('Are you sure you want to logout?')) return;
+    sessionStorage.removeItem(SESSION_KEY);
+    pushedRoomsRef.current.clear();
     socketRef.current?.disconnect();
     socketRef.current?.connect();
     setIsAuthenticated(false);
@@ -155,8 +243,11 @@ export default function ChatApp() {
       setCurrentRoom(roomName);
       socket.emit('join_room', roomName);
       setMessages([]);
-      if (userEmailRef.current) {
-        registerPushForRoom(userEmailRef.current, roomName).catch(console.error);
+
+      // Subscribe push only if we haven't done so for this room yet
+      if (swRegRef.current && userEmailRef.current && !pushedRoomsRef.current.has(roomName)) {
+        pushedRoomsRef.current.add(roomName);
+        subscribePushForRoom(userEmailRef.current, roomName, swRegRef.current).catch(console.error);
       }
     }
     setIsSidebarOpen(false);
@@ -170,6 +261,18 @@ export default function ChatApp() {
     new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
   if (!isAuthenticated) {
+    // Bot mode shows a minimal loading screen instead of login
+    if (isBotMode) {
+      return (
+        <div className="login-container">
+          <div className="login-card">
+            <h1 className="login-title">🤖 Connecting bot...</h1>
+            {authError && <p style={{ color: 'red' }}>{authError}</p>}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || ''}>
         <div className="login-container">
