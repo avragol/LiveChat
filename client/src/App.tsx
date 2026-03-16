@@ -7,14 +7,21 @@ import { Message, User, UserJoinedData, UserLeftData, TypingData } from './types
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 const MAX_MESSAGE_LENGTH = 500;
 
-// Register service worker and subscribe to push
-async function registerPush(email: string): Promise<void> {
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+// Register push subscription for a specific room
+async function registerPushForRoom(email: string, room: string): Promise<void> {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (Notification.permission === 'denied') return;
 
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') return;
 
-  // Fetch VAPID public key from server
   const res = await fetch(`${SOCKET_URL}/vapid-public-key`);
   const { publicKey } = await res.json();
   if (!publicKey) return;
@@ -31,17 +38,10 @@ async function registerPush(email: string): Promise<void> {
   await fetch(`${SOCKET_URL}/subscribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, subscription }),
+    body: JSON.stringify({ email, room, subscription }),
   });
 
-  console.log('🔔 Push notifications registered');
-}
-
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+  console.log(`🔔 Push registered for #${room}`);
 }
 
 export default function ChatApp() {
@@ -62,6 +62,7 @@ export default function ChatApp() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const userEmailRef = useRef('');
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, { autoConnect: true });
@@ -74,51 +75,31 @@ export default function ChatApp() {
     newSocket.on('auth-success', ({ username: verifiedName, email }: { username: string; email: string }) => {
       setUsername(verifiedName);
       setUserEmail(email);
+      userEmailRef.current = email;
       setIsAuthenticated(true);
       setAuthError('');
       newSocket.emit('join_room', 'General');
       setCurrentRoom('General');
-      // Register push after successful auth
-      registerPush(email).catch(console.error);
+      registerPushForRoom(email, 'General').catch(console.error);
     });
 
-    newSocket.on('auth-error', (msg: string) => {
-      setAuthError(msg);
-      setIsAuthenticated(false);
-    });
-
+    newSocket.on('auth-error', (msg: string) => { setAuthError(msg); setIsAuthenticated(false); });
     newSocket.on('room-list-update', (updatedRooms: string[]) => setRooms(updatedRooms));
     newSocket.on('previous_messages', (msgs: Message[]) => setMessages(msgs));
     newSocket.on('new_message', (msg: Message) => setMessages(prev => [...prev, msg]));
 
     newSocket.on('user_joined', ({ username: joinedUser, users: updatedUsers }: UserJoinedData) => {
       setUsers(updatedUsers);
-      setMessages(prev => [...prev, {
-        id: `system-${Date.now()}`,
-        username: 'System',
-        email: '',
-        text: `${joinedUser} joined the room`,
-        room: currentRoom,
-        timestamp: Date.now(),
-      }]);
+      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${joinedUser} joined the room`, room: '', timestamp: Date.now() }]);
     });
 
     newSocket.on('user_left', ({ username: leftUser, users: updatedUsers }: UserLeftData) => {
       setUsers(updatedUsers);
-      setMessages(prev => [...prev, {
-        id: `system-${Date.now()}`,
-        username: 'System',
-        email: '',
-        text: `${leftUser} left the room`,
-        room: currentRoom,
-        timestamp: Date.now(),
-      }]);
+      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${leftUser} left the room`, room: '', timestamp: Date.now() }]);
     });
 
     newSocket.on('user_typing', ({ username: typingUser, isTyping }: TypingData) => {
-      setTypingUsers(prev =>
-        isTyping ? [...new Set([...prev, typingUser])] : prev.filter(u => u !== typingUser)
-      );
+      setTypingUsers(prev => isTyping ? [...new Set([...prev, typingUser])] : prev.filter(u => u !== typingUser));
     });
 
     newSocket.on('room-creation-error', (error: string) => alert(error));
@@ -127,17 +108,10 @@ export default function ChatApp() {
     return () => { newSocket.close(); };
   }, []);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  const handleGoogleSuccess = (idToken: string) => {
-    socketRef.current?.emit('authenticate', idToken);
-  };
-
-  const handleGoogleError = () => {
-    setAuthError('Failed to sign in with Google. Please try again.');
-  };
+  const handleGoogleSuccess = (idToken: string) => { socketRef.current?.emit('authenticate', idToken); };
+  const handleGoogleError = () => { setAuthError('Failed to sign in with Google. Please try again.'); };
 
   const handleLogout = () => {
     if (!window.confirm('Are you sure you want to logout?')) return;
@@ -146,6 +120,7 @@ export default function ChatApp() {
     setIsAuthenticated(false);
     setUsername('');
     setUserEmail('');
+    userEmailRef.current = '';
     setCurrentRoom('');
     setMessages([]);
     setUsers([]);
@@ -180,15 +155,15 @@ export default function ChatApp() {
       setCurrentRoom(roomName);
       socket.emit('join_room', roomName);
       setMessages([]);
+      if (userEmailRef.current) {
+        registerPushForRoom(userEmailRef.current, roomName).catch(console.error);
+      }
     }
     setIsSidebarOpen(false);
   };
 
   const handleCreateRoom = () => {
-    if (socket && newRoomName.trim()) {
-      socket.emit('create-room', newRoomName.trim());
-      setNewRoomName('');
-    }
+    if (socket && newRoomName.trim()) { socket.emit('create-room', newRoomName.trim()); setNewRoomName(''); }
   };
 
   const formatTime = (timestamp: number) =>
@@ -211,40 +186,25 @@ export default function ChatApp() {
   return (
     <div className="chat-container">
       <div className={`sidebar-overlay ${isSidebarOpen ? 'open' : ''}`} onClick={() => setIsSidebarOpen(false)} />
-
       <div className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
           <h2 className="sidebar-title">Rooms</h2>
           <button className="sidebar-close-btn" onClick={() => setIsSidebarOpen(false)} aria-label="Close menu">✕</button>
         </div>
-
         <div className="create-room-section">
-          <input
-            type="text"
-            value={newRoomName}
-            onChange={(e) => setNewRoomName(e.target.value)}
+          <input type="text" value={newRoomName} onChange={(e) => setNewRoomName(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleCreateRoom()}
-            className="create-room-input"
-            placeholder="New room name..."
-          />
-          <button onClick={handleCreateRoom} disabled={!newRoomName.trim()} className="create-room-button">
-            ➕ Create
-          </button>
+            className="create-room-input" placeholder="New room name..." />
+          <button onClick={handleCreateRoom} disabled={!newRoomName.trim()} className="create-room-button">➕ Create</button>
         </div>
-
         <div className="rooms-list">
           {rooms.map(room => (
-            <button
-              key={room}
-              onClick={() => switchRoom(room)}
-              className={`room-item ${currentRoom === room ? 'active' : ''}`}
-            >
+            <button key={room} onClick={() => switchRoom(room)} className={`room-item ${currentRoom === room ? 'active' : ''}`}>
               <span className="room-emoji">{room === 'General' ? '💬' : '📁'}</span>
               <span className="room-name">{room}</span>
             </button>
           ))}
         </div>
-
         <div className="users-section">
           <div className="users-title">Online users: {users.length}</div>
           {users.map((user: User) => (
@@ -254,7 +214,6 @@ export default function ChatApp() {
             </div>
           ))}
         </div>
-
         <div className="sidebar-footer">
           <div className="current-user-profile">
             <div className="current-user-info">
@@ -308,19 +267,10 @@ export default function ChatApp() {
         </div>
 
         <div className="message-input-area">
-          <input
-            type="text"
-            value={messageInput}
-            onChange={handleTyping}
-            onKeyPress={handleKeyPress}
-            className="message-input"
-            placeholder="Type a message..."
-            maxLength={MAX_MESSAGE_LENGTH}
-          />
+          <input type="text" value={messageInput} onChange={handleTyping} onKeyPress={handleKeyPress}
+            className="message-input" placeholder="Type a message..." maxLength={MAX_MESSAGE_LENGTH} />
           <div className="char-counter">{messageInput.length}/{MAX_MESSAGE_LENGTH}</div>
-          <button onClick={handleSendMessage} disabled={!messageInput.trim()} className="send-button">
-            Send
-          </button>
+          <button onClick={handleSendMessage} disabled={!messageInput.trim()} className="send-button">Send</button>
         </div>
       </div>
     </div>
