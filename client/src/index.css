@@ -670,3 +670,34 @@ body {
         font-size: 24px;
     }
 }
+/* ─────────────────────────────────────────
+   PWA — Safe Area & Standalone Mode
+   Add these rules at the BOTTOM of index.css
+───────────────────────────────────────── */
+
+/* Fill the safe-area on notched phones (iPhone X+, Android cutout) */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* When running as installed PWA (standalone / fullscreen) */
+@media (display-mode: standalone) {
+  /* Chat header sits right under the status bar — give it extra top padding */
+  .chat-header {
+    padding-top: max(16px, env(safe-area-inset-top));
+  }
+
+  /* Pin the input bar above the home-indicator on iOS */
+  .message-input-area {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  /* Login page — keep card clear of notch */
+  .login-container {
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+}
