@@ -8,7 +8,7 @@ if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
 const url = process.env.TURSO_DATABASE_URL;
 const authToken = process.env.TURSO_AUTH_TOKEN;
 
-console.log('🔌 Connecting to Turso:', url.replace(/\/\/.*@/, '//***@'));
+console.log('🔌 Connecting to Turso:', url);
 
 export const db = createClient({ url, authToken });
 
@@ -32,6 +32,16 @@ export async function initDb(): Promise<void> {
     )
   `);
 
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      subscription TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      UNIQUE(email, subscription)
+    )
+  `);
+
   await db.execute(`INSERT OR IGNORE INTO rooms (name) VALUES ('General')`);
 
   console.log('✅ Database initialized');
@@ -43,17 +53,11 @@ export async function getRooms(): Promise<string[]> {
 }
 
 export async function createRoom(name: string): Promise<void> {
-  await db.execute({
-    sql: 'INSERT INTO rooms (name) VALUES (?)',
-    args: [name],
-  });
+  await db.execute({ sql: 'INSERT INTO rooms (name) VALUES (?)', args: [name] });
 }
 
 export async function roomExists(name: string): Promise<boolean> {
-  const result = await db.execute({
-    sql: 'SELECT 1 FROM rooms WHERE name = ?',
-    args: [name],
-  });
+  const result = await db.execute({ sql: 'SELECT 1 FROM rooms WHERE name = ?', args: [name] });
   return result.rows.length > 0;
 }
 
@@ -81,6 +85,31 @@ export async function saveMessage(message: Message): Promise<void> {
   await db.execute({
     sql: 'INSERT INTO messages (id, username, email, text, room, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
     args: [message.id, message.username, message.email, message.text, message.room, message.timestamp],
+  });
+}
+
+// Push subscriptions
+export async function savePushSubscription(email: string, subscription: string): Promise<void> {
+  await db.execute({
+    sql: 'INSERT OR REPLACE INTO push_subscriptions (email, subscription) VALUES (?, ?)',
+    args: [email, subscription],
+  });
+}
+
+export async function getPushSubscriptionsByEmails(emails: string[]): Promise<{ email: string; subscription: string }[]> {
+  if (emails.length === 0) return [];
+  const placeholders = emails.map(() => '?').join(', ');
+  const result = await db.execute({
+    sql: `SELECT email, subscription FROM push_subscriptions WHERE email IN (${placeholders})`,
+    args: emails,
+  });
+  return result.rows.map(r => ({ email: r.email as string, subscription: r.subscription as string }));
+}
+
+export async function deletePushSubscription(email: string, subscription: string): Promise<void> {
+  await db.execute({
+    sql: 'DELETE FROM push_subscriptions WHERE email = ? AND subscription = ?',
+    args: [email, subscription],
   });
 }
 
