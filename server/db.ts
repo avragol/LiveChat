@@ -5,13 +5,14 @@ if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
   throw new Error('Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN environment variables');
 }
 
-export const db = createClient({
-  url: process.env.TURSO_DATABASE_URL,
-  authToken: process.env.TURSO_AUTH_TOKEN,
-});
+const url = process.env.TURSO_DATABASE_URL;
+const authToken = process.env.TURSO_AUTH_TOKEN;
+
+console.log('🔌 Connecting to Turso:', url.replace(/\/\/.*@/, '//***@'));
+
+export const db = createClient({ url, authToken });
 
 export async function initDb(): Promise<void> {
-  // executeMultiple is not supported over HTTP — run each statement separately
   await db.execute(`
     CREATE TABLE IF NOT EXISTS rooms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +84,6 @@ export async function saveMessage(message: Message): Promise<void> {
   });
 }
 
-// Shared Message type
 export interface Message {
   id: string;
   username: string;
