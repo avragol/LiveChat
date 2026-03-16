@@ -118,6 +118,21 @@ app.post('/subscribe', async (req, res) => {
   res.json({ ok: true });
 });
 
+
+app.post('/unsubscribe', async (req, res) => {
+  const { email, room } = req.body;
+  if (!email || !room) {
+    res.status(400).json({ error: 'Missing email or room' });
+    return;
+  }
+  await db.execute({
+    sql: 'DELETE FROM push_subscriptions WHERE email = ? AND room = ?',
+    args: [email, room],
+  });
+  console.log(`🔕 Unsubscribed: ${email} from #${room}`);
+  res.json({ ok: true });
+});
+
 // Socket.IO
 io.on('connection', (socket: Socket) => {
   console.log('User connected:', socket.id);
