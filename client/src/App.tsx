@@ -7,9 +7,47 @@ import { Message, User, UserJoinedData, UserLeftData, TypingData } from './types
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 const MAX_MESSAGE_LENGTH = 500;
 
+// Register service worker and subscribe to push
+async function registerPush(email: string): Promise<void> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') return;
+
+  // Fetch VAPID public key from server
+  const res = await fetch(`${SOCKET_URL}/vapid-public-key`);
+  const { publicKey } = await res.json();
+  if (!publicKey) return;
+
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+
+  const existing = await reg.pushManager.getSubscription();
+  const subscription = existing ?? await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+
+  await fetch(`${SOCKET_URL}/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, subscription }),
+  });
+
+  console.log('🔔 Push notifications registered');
+}
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
 export default function ChatApp() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [username, setUsername] = useState('');
+  const [userEmail, setUserEmail] = useState('');
   const [currentRoom, setCurrentRoom] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -20,7 +58,7 @@ export default function ChatApp() {
   const [rooms, setRooms] = useState<string[]>([]);
   const [newRoomName, setNewRoomName] = useState('');
   const [authError, setAuthError] = useState('');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // mobile drawer
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -33,12 +71,15 @@ export default function ChatApp() {
     newSocket.on('connect', () => setIsConnected(true));
     newSocket.on('disconnect', () => setIsConnected(false));
 
-    newSocket.on('auth-success', ({ username: verifiedName }: { username: string }) => {
+    newSocket.on('auth-success', ({ username: verifiedName, email }: { username: string; email: string }) => {
       setUsername(verifiedName);
+      setUserEmail(email);
       setIsAuthenticated(true);
       setAuthError('');
       newSocket.emit('join_room', 'General');
       setCurrentRoom('General');
+      // Register push after successful auth
+      registerPush(email).catch(console.error);
     });
 
     newSocket.on('auth-error', (msg: string) => {
@@ -104,6 +145,7 @@ export default function ChatApp() {
     socketRef.current?.connect();
     setIsAuthenticated(false);
     setUsername('');
+    setUserEmail('');
     setCurrentRoom('');
     setMessages([]);
     setUsers([]);
@@ -139,7 +181,7 @@ export default function ChatApp() {
       socket.emit('join_room', roomName);
       setMessages([]);
     }
-    setIsSidebarOpen(false); // close drawer after selecting a room on mobile
+    setIsSidebarOpen(false);
   };
 
   const handleCreateRoom = () => {
@@ -168,24 +210,12 @@ export default function ChatApp() {
 
   return (
     <div className="chat-container">
+      <div className={`sidebar-overlay ${isSidebarOpen ? 'open' : ''}`} onClick={() => setIsSidebarOpen(false)} />
 
-      {/* Backdrop overlay — mobile only */}
-      <div
-        className={`sidebar-overlay ${isSidebarOpen ? 'open' : ''}`}
-        onClick={() => setIsSidebarOpen(false)}
-      />
-
-      {/* Sidebar / Drawer */}
       <div className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
           <h2 className="sidebar-title">Rooms</h2>
-          <button
-            className="sidebar-close-btn"
-            onClick={() => setIsSidebarOpen(false)}
-            aria-label="Close menu"
-          >
-            ✕
-          </button>
+          <button className="sidebar-close-btn" onClick={() => setIsSidebarOpen(false)} aria-label="Close menu">✕</button>
         </div>
 
         <div className="create-room-section">
@@ -229,24 +259,17 @@ export default function ChatApp() {
           <div className="current-user-profile">
             <div className="current-user-info">
               <div className="current-user-name">{username}</div>
+              <div className="current-user-email">{userEmail}</div>
             </div>
             <button onClick={handleLogout} className="logout-button-small" title="Logout">🚪</button>
           </div>
         </div>
       </div>
 
-      {/* Main Chat */}
       <div className="main-chat">
         <div className="chat-header">
           <div className="header-info">
-            {/* Hamburger — visible only on mobile via CSS */}
-            <button
-              className="menu-btn"
-              onClick={() => setIsSidebarOpen(true)}
-              aria-label="Open menu"
-            >
-              ☰
-            </button>
+            <button className="menu-btn" onClick={() => setIsSidebarOpen(true)} aria-label="Open menu">☰</button>
             <span className="room-emoji">{currentRoom === 'General' ? '💬' : '📁'}</span>
             <div>
               <h1 className="room-title">{currentRoom}</h1>
@@ -300,7 +323,6 @@ export default function ChatApp() {
           </button>
         </div>
       </div>
-
     </div>
   );
 }
