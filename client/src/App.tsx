@@ -7,18 +7,11 @@ import { Message, User, UserJoinedData, UserLeftData, TypingData } from './types
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 const MAX_MESSAGE_LENGTH = 500;
 
-interface GoogleUser {
-  name: string;
-  email: string;
-  picture: string;
-}
-
 export default function ChatApp() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [username, setUsername] = useState('');
   const [currentRoom, setCurrentRoom] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
@@ -26,14 +19,36 @@ export default function ChatApp() {
   const [isConnected, setIsConnected] = useState(false);
   const [rooms, setRooms] = useState<string[]>([]);
   const [newRoomName, setNewRoomName] = useState('');
+  const [authError, setAuthError] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
+  const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
-    const newSocket = io(SOCKET_URL);
+    const newSocket = io(SOCKET_URL, { autoConnect: true });
+    socketRef.current = newSocket;
+    setSocket(newSocket);
 
     newSocket.on('connect', () => setIsConnected(true));
     newSocket.on('disconnect', () => setIsConnected(false));
+
+    // Auth events
+    newSocket.on('auth-success', ({ username: verifiedName }: { username: string }) => {
+      setUsername(verifiedName);
+      setIsAuthenticated(true);
+      setAuthError('');
+      // Auto-join General after auth
+      newSocket.emit('join_room', 'General');
+      setCurrentRoom('General');
+    });
+
+    newSocket.on('auth-error', (msg: string) => {
+      setAuthError(msg);
+      setIsAuthenticated(false);
+    });
+
+    // Room & message events
+    newSocket.on('room-list-update', (updatedRooms: string[]) => setRooms(updatedRooms));
     newSocket.on('previous_messages', (msgs: Message[]) => setMessages(msgs));
     newSocket.on('new_message', (msg: Message) => setMessages(prev => [...prev, msg]));
 
@@ -42,9 +57,10 @@ export default function ChatApp() {
       setMessages(prev => [...prev, {
         id: `system-${Date.now()}`,
         username: 'System',
+        email: '',
         text: `${joinedUser} joined the room`,
         room: currentRoom,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       }]);
     });
 
@@ -53,83 +69,76 @@ export default function ChatApp() {
       setMessages(prev => [...prev, {
         id: `system-${Date.now()}`,
         username: 'System',
+        email: '',
         text: `${leftUser} left the room`,
         room: currentRoom,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       }]);
     });
 
     newSocket.on('user_typing', ({ username: typingUser, isTyping }: TypingData) => {
-      if (isTyping) {
-        setTypingUsers(prev => [...new Set([...prev, typingUser])]);
-      } else {
-        setTypingUsers(prev => prev.filter(u => u !== typingUser));
-      }
+      setTypingUsers(prev =>
+        isTyping ? [...new Set([...prev, typingUser])] : prev.filter(u => u !== typingUser)
+      );
     });
 
-    newSocket.on('room-list-update', (updatedRooms: string[]) => {
-      setRooms(updatedRooms);
-    });
+    newSocket.on('room-creation-error', (error: string) => alert(error));
+    newSocket.on('rate-limit-error', (error: string) => alert(error));
 
-    newSocket.on('room-creation-error', (error: string) => {
-      alert(error);
-    });
-
-    setSocket(newSocket);
-
-    return () => {
-      newSocket.close();
-    };
+    return () => { newSocket.close(); };
   }, []);
-
-  // התחברות אוטומטית לחדר כשמתחברים
-  useEffect(() => {
-    if (socket && isAuthenticated && currentRoom && username) {
-      socket.emit('join_room', { username: username.trim(), room: currentRoom });
-    }
-  }, [socket, isAuthenticated, currentRoom, username]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Called by GoogleAuth with raw ID token — server verifies it
+  const handleGoogleSuccess = (idToken: string) => {
+    socketRef.current?.emit('authenticate', idToken);
+  };
+
+  const handleGoogleError = () => {
+    setAuthError('Failed to sign in with Google. Please try again.');
+  };
+
+  const handleLogout = () => {
+    if (!window.confirm('Are you sure you want to logout?')) return;
+    socketRef.current?.disconnect();
+    socketRef.current?.connect();
+    setIsAuthenticated(false);
+    setUsername('');
+    setCurrentRoom('');
+    setMessages([]);
+    setUsers([]);
+    setTypingUsers([]);
+    setMessageInput('');
+  };
+
   const handleSendMessage = () => {
-    if (messageInput.trim() && socket) {
-      const trimmed = messageInput.trim().slice(0, MAX_MESSAGE_LENGTH);
-      socket.emit('send_message', trimmed);
-      setMessageInput('');
-      socket.emit('typing', false);
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
-    }
+    if (!messageInput.trim() || !socket) return;
+    socket.emit('send_message', messageInput.trim().slice(0, MAX_MESSAGE_LENGTH));
+    setMessageInput('');
+    socket.emit('typing', false);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }
   };
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.slice(0, MAX_MESSAGE_LENGTH);
     setMessageInput(value);
     if (!socket) return;
-
     socket.emit('typing', true);
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-    typingTimeoutRef.current = window.setTimeout(() => {
-      socket.emit('typing', false);
-    }, 1000);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = window.setTimeout(() => socket.emit('typing', false), 1000);
   };
 
   const switchRoom = (roomName: string) => {
     if (socket && roomName !== currentRoom) {
       setCurrentRoom(roomName);
-      socket.emit('join_room', { username, room: roomName });
+      socket.emit('join_room', roomName);
       setMessages([]);
     }
   };
@@ -141,40 +150,8 @@ export default function ChatApp() {
     }
   };
 
-  const formatTime = (timestamp: number) => {
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  };
-
-  // Google Auth Handlers
-  const handleGoogleSuccess = (user: GoogleUser) => {
-    setGoogleUser(user);
-    setUsername(user.name);
-    setIsAuthenticated(true);
-    setCurrentRoom('General');
-  };
-
-  const handleGoogleError = () => {
-    alert('Failed to sign in with Google. Please try again.');
-  };
-
-  const handleLogout = () => {
-    const confirmLogout = window.confirm('Are you sure you want to logout? You will be disconnected from the chat.');
-    if (!confirmLogout) return;
-
-    if (socket && currentRoom && username) {
-      socket.emit('leave_room');
-    }
-
-    setIsAuthenticated(false);
-    setGoogleUser(null);
-    setUsername('');
-    setCurrentRoom('');
-    setMessages([]);
-    setUsers([]);
-    setTypingUsers([]);
-    setMessageInput('');
-  };
+  const formatTime = (timestamp: number) =>
+    new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
   if (!isAuthenticated) {
     return (
@@ -182,10 +159,8 @@ export default function ChatApp() {
         <div className="login-container">
           <div className="login-card">
             <h1 className="login-title">Real-Time Chat</h1>
-            <GoogleAuth
-              onSuccess={handleGoogleSuccess}
-              onError={handleGoogleError}
-            />
+            {authError && <p style={{ color: 'red', marginBottom: '1rem' }}>{authError}</p>}
+            <GoogleAuth onSuccess={handleGoogleSuccess} onError={handleGoogleError} />
           </div>
         </div>
       </GoogleOAuthProvider>
@@ -208,11 +183,7 @@ export default function ChatApp() {
             className="create-room-input"
             placeholder="New room name..."
           />
-          <button
-            onClick={handleCreateRoom}
-            disabled={!newRoomName.trim()}
-            className="create-room-button"
-          >
+          <button onClick={handleCreateRoom} disabled={!newRoomName.trim()} className="create-room-button">
             ➕ Create
           </button>
         </div>
@@ -232,38 +203,22 @@ export default function ChatApp() {
 
         <div className="users-section">
           <div className="users-title">Online users: {users.length}</div>
-          <div>
-            {users.map((user: User) => (
-              <div key={user.id} className="user-item">
-                <div className="status-dot" />
-                <span>{user.username}</span>
-              </div>
-            ))}
-          </div>
+          {users.map((user: User) => (
+            <div key={user.id} className="user-item">
+              <div className="status-dot" />
+              <span>{user.username}</span>
+            </div>
+          ))}
         </div>
 
-        {googleUser && (
-          <div className="sidebar-footer">
-            <div className="current-user-profile">
-              <img
-                src={googleUser.picture}
-                alt={googleUser.name}
-                className="current-user-avatar"
-              />
-              <div className="current-user-info">
-                <div className="current-user-name">{googleUser.name}</div>
-                <div className="current-user-email">{googleUser.email}</div>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="logout-button-small"
-                title="Logout"
-              >
-                🚪
-              </button>
+        <div className="sidebar-footer">
+          <div className="current-user-profile">
+            <div className="current-user-info">
+              <div className="current-user-name">{username}</div>
             </div>
+            <button onClick={handleLogout} className="logout-button-small" title="Logout">🚪</button>
           </div>
-        )}
+        </div>
       </div>
 
       <div className="main-chat">
@@ -280,29 +235,18 @@ export default function ChatApp() {
               <div className={`status-dot ${!isConnected ? 'disconnected' : ''}`} />
               <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
             </div>
-            <button
-              onClick={handleLogout}
-              className="logout-button-header"
-              title="Logout"
-            >
-              🚪
-            </button>
+            <button onClick={handleLogout} className="logout-button-header" title="Logout">🚪</button>
           </div>
         </div>
 
         <div className="messages-area">
           {messages.map((msg: Message) => (
-            <div
-              key={msg.id}
-              className={`message ${msg.username === 'System' ? 'system' : ''}`}
-            >
+            <div key={msg.id} className={`message ${msg.username === 'System' ? 'system' : ''}`}>
               {msg.username === 'System' ? (
                 <div className="system-message">{msg.text}</div>
               ) : (
                 <div className={`message-bubble ${msg.username === username ? 'own' : 'other'}`}>
-                  {msg.username !== username && (
-                    <div className="message-sender">{msg.username}</div>
-                  )}
+                  {msg.username !== username && <div className="message-sender">{msg.username}</div>}
                   <div className="message-text">{msg.text}</div>
                   <div className="message-time">{formatTime(msg.timestamp)}</div>
                 </div>
@@ -328,11 +272,7 @@ export default function ChatApp() {
             maxLength={MAX_MESSAGE_LENGTH}
           />
           <div className="char-counter">{messageInput.length}/{MAX_MESSAGE_LENGTH}</div>
-          <button
-            onClick={handleSendMessage}
-            disabled={!messageInput.trim()}
-            className="send-button"
-          >
+          <button onClick={handleSendMessage} disabled={!messageInput.trim()} className="send-button">
             Send
           </button>
         </div>
