@@ -55,7 +55,7 @@ export async function roomExists(name: string): Promise<boolean> {
 
 export async function getRoomCount(): Promise<number> {
   const result = await db.execute('SELECT COUNT(*) as count FROM rooms');
-  return result.rows[0].count as number;
+  return (result.rows[0]?.count as number) ?? 0;
 }
 
 export async function getRecentMessages(room: string, limit = 50): Promise<Message[]> {
