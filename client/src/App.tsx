@@ -1,3 +1,4 @@
+✅ input area fixed
 import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { GoogleOAuthProvider } from '@react-oauth/google';
@@ -358,7 +359,6 @@ export default function ChatApp() {
       <div className="main-chat">
         <div className="chat-header">
           <div className="header-info">
-            <button className="menu-btn" onClick={() => setIsSidebarOpen(true)} aria-label="פתח תפריט">☰</button>
             <span className="room-emoji">{currentRoom === 'General' ? '💬' : '📁'}</span>
             <div>
               <h1 className="room-title">{currentRoom}</h1>
@@ -371,6 +371,7 @@ export default function ChatApp() {
               <span>{isConnected ? 'מחובר' : 'מנותק'}</span>
             </div>
             <button onClick={handleLogout} className="logout-button-header" title="התנתק">🚪</button>
+            <button className="menu-btn" onClick={() => setIsSidebarOpen(true)} aria-label="פתח תפריט">☰</button>
           </div>
         </div>
 
@@ -395,12 +396,14 @@ export default function ChatApp() {
         </div>
 
         <div className="message-input-area">
-          <button onClick={handleSendMessage} disabled={!messageInput.trim()} className="send-button">שלח</button>
-          <div className="char-counter">{messageInput.length}/{MAX_MESSAGE_LENGTH}</div>
           <input type="text" value={messageInput} onChange={handleTyping} onKeyPress={handleKeyPress}
             className="message-input" placeholder="הקלד הודעה..." maxLength={MAX_MESSAGE_LENGTH} />
+          <div className="char-counter">{messageInput.length}/{MAX_MESSAGE_LENGTH}</div>
+          <button onClick={handleSendMessage} disabled={!messageInput.trim()} className="send-button">שלח</button>
         </div>
       </div>
     </div>
   );
 }
+
+
