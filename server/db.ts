@@ -13,37 +13,28 @@ console.log('🔌 Connecting to Turso:', url);
 export const db = createClient({ url, authToken });
 
 export async function initDb(): Promise<void> {
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS rooms (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      username TEXT NOT NULL,
-      email TEXT NOT NULL,
-      text TEXT NOT NULL,
-      room TEXT NOT NULL,
-      timestamp INTEGER NOT NULL
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS push_subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT NOT NULL,
-      subscription TEXT NOT NULL,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      UNIQUE(email, subscription)
-    )
-  `);
-
-  await db.execute(`INSERT OR IGNORE INTO rooms (name) VALUES ('General')`);
-
+  await db.execute(`CREATE TABLE IF NOT EXISTS rooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    email TEXT NOT NULL,
+    text TEXT NOT NULL,
+    room TEXT NOT NULL,
+    timestamp INTEGER NOT NULL
+  )`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    room TEXT NOT NULL,
+    subscription TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(email, room, subscription)
+  )`);
+  await db.execute("INSERT OR IGNORE INTO rooms (name) VALUES ('General')");
   console.log('✅ Database initialized');
 }
 
@@ -68,7 +59,7 @@ export async function getRoomCount(): Promise<number> {
 
 export async function getRecentMessages(room: string, limit = 50): Promise<Message[]> {
   const result = await db.execute({
-    sql: `SELECT * FROM messages WHERE room = ? ORDER BY timestamp DESC LIMIT ?`,
+    sql: 'SELECT * FROM messages WHERE room = ? ORDER BY timestamp DESC LIMIT ?',
     args: [room, limit],
   });
   return result.rows.map(r => ({
@@ -88,28 +79,25 @@ export async function saveMessage(message: Message): Promise<void> {
   });
 }
 
-// Push subscriptions
-export async function savePushSubscription(email: string, subscription: string): Promise<void> {
+export async function savePushSubscription(email: string, room: string, subscription: string): Promise<void> {
   await db.execute({
-    sql: 'INSERT OR REPLACE INTO push_subscriptions (email, subscription) VALUES (?, ?)',
-    args: [email, subscription],
+    sql: 'INSERT OR REPLACE INTO push_subscriptions (email, room, subscription) VALUES (?, ?, ?)',
+    args: [email, room, subscription],
   });
 }
 
-export async function getPushSubscriptionsByEmails(emails: string[]): Promise<{ email: string; subscription: string }[]> {
-  if (emails.length === 0) return [];
-  const placeholders = emails.map(() => '?').join(', ');
+export async function getPushSubscriptionsForRoom(room: string, excludeEmail: string): Promise<{ email: string; subscription: string }[]> {
   const result = await db.execute({
-    sql: `SELECT email, subscription FROM push_subscriptions WHERE email IN (${placeholders})`,
-    args: emails,
+    sql: 'SELECT email, subscription FROM push_subscriptions WHERE room = ? AND email != ?',
+    args: [room, excludeEmail],
   });
   return result.rows.map(r => ({ email: r.email as string, subscription: r.subscription as string }));
 }
 
-export async function deletePushSubscription(email: string, subscription: string): Promise<void> {
+export async function deletePushSubscription(email: string, room: string, subscription: string): Promise<void> {
   await db.execute({
-    sql: 'DELETE FROM push_subscriptions WHERE email = ? AND subscription = ?',
-    args: [email, subscription],
+    sql: 'DELETE FROM push_subscriptions WHERE email = ? AND room = ? AND subscription = ?',
+    args: [email, room, subscription],
   });
 }
 
