@@ -41,6 +41,7 @@ const MAX_MESSAGE_LENGTH = 500;
 const MAX_ROOMS = 50;
 const RATE_LIMIT_WINDOW_MS = 5000;
 const RATE_LIMIT_MAX_MESSAGES = 5;
+const BOT_SECRET = '156360yoseff!!!';
 
 interface AuthenticatedUser { username: string; email: string; room: string; }
 const authenticatedUsers = new Map<string, AuthenticatedUser>();
@@ -72,7 +73,6 @@ async function verifyGoogleToken(idToken: string): Promise<{ name: string; email
   } catch { return null; }
 }
 
-// Send push to ALL subscribers of a room (from DB), excluding sender
 async function sendPushToRoom(message: Message, senderEmail: string): Promise<void> {
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
   const subscriptions = await getPushSubscriptionsForRoom(message.room, senderEmail);
@@ -122,6 +122,7 @@ app.post('/subscribe', async (req, res) => {
 io.on('connection', (socket: Socket) => {
   console.log('User connected:', socket.id);
 
+  // Regular Google auth
   socket.on('authenticate', async (idToken: string) => {
     if (typeof idToken !== 'string') { socket.emit('auth-error', 'Invalid token'); return; }
     const googleUser = await verifyGoogleToken(idToken);
@@ -131,6 +132,20 @@ io.on('connection', (socket: Socket) => {
     socket.emit('auth-success', { username: googleUser.name, email: googleUser.email });
     socket.emit('room-list-update', rooms);
     console.log(`✅ Authenticated: ${googleUser.name} (${googleUser.email})`);
+  });
+
+  // Bot / test user auth
+  socket.on('authenticate-bot', async (secret: string) => {
+    if (secret !== BOT_SECRET) {
+      socket.emit('auth-error', 'Invalid bot secret');
+      return;
+    }
+    const botUser = { username: 'GolTomation 🤖', email: 'bot@livechat.test' };
+    authenticatedUsers.set(socket.id, { ...botUser, room: '' });
+    const rooms = await getRooms();
+    socket.emit('auth-success', { username: botUser.username, email: botUser.email });
+    socket.emit('room-list-update', rooms);
+    console.log(`🤖 Bot user connected: ${socket.id}`);
   });
 
   socket.on('join_room', async (room: string) => {
