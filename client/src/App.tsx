@@ -20,6 +20,7 @@ export default function ChatApp() {
   const [rooms, setRooms] = useState<string[]>([]);
   const [newRoomName, setNewRoomName] = useState('');
   const [authError, setAuthError] = useState('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // mobile drawer
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -32,12 +33,10 @@ export default function ChatApp() {
     newSocket.on('connect', () => setIsConnected(true));
     newSocket.on('disconnect', () => setIsConnected(false));
 
-    // Auth events
     newSocket.on('auth-success', ({ username: verifiedName }: { username: string }) => {
       setUsername(verifiedName);
       setIsAuthenticated(true);
       setAuthError('');
-      // Auto-join General after auth
       newSocket.emit('join_room', 'General');
       setCurrentRoom('General');
     });
@@ -47,7 +46,6 @@ export default function ChatApp() {
       setIsAuthenticated(false);
     });
 
-    // Room & message events
     newSocket.on('room-list-update', (updatedRooms: string[]) => setRooms(updatedRooms));
     newSocket.on('previous_messages', (msgs: Message[]) => setMessages(msgs));
     newSocket.on('new_message', (msg: Message) => setMessages(prev => [...prev, msg]));
@@ -92,7 +90,6 @@ export default function ChatApp() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Called by GoogleAuth with raw ID token — server verifies it
   const handleGoogleSuccess = (idToken: string) => {
     socketRef.current?.emit('authenticate', idToken);
   };
@@ -112,6 +109,7 @@ export default function ChatApp() {
     setUsers([]);
     setTypingUsers([]);
     setMessageInput('');
+    setIsSidebarOpen(false);
   };
 
   const handleSendMessage = () => {
@@ -141,6 +139,7 @@ export default function ChatApp() {
       socket.emit('join_room', roomName);
       setMessages([]);
     }
+    setIsSidebarOpen(false); // close drawer after selecting a room on mobile
   };
 
   const handleCreateRoom = () => {
@@ -169,9 +168,24 @@ export default function ChatApp() {
 
   return (
     <div className="chat-container">
-      <div className="sidebar">
+
+      {/* Backdrop overlay — mobile only */}
+      <div
+        className={`sidebar-overlay ${isSidebarOpen ? 'open' : ''}`}
+        onClick={() => setIsSidebarOpen(false)}
+      />
+
+      {/* Sidebar / Drawer */}
+      <div className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
           <h2 className="sidebar-title">Rooms</h2>
+          <button
+            className="sidebar-close-btn"
+            onClick={() => setIsSidebarOpen(false)}
+            aria-label="Close menu"
+          >
+            ✕
+          </button>
         </div>
 
         <div className="create-room-section">
@@ -221,9 +235,18 @@ export default function ChatApp() {
         </div>
       </div>
 
+      {/* Main Chat */}
       <div className="main-chat">
         <div className="chat-header">
           <div className="header-info">
+            {/* Hamburger — visible only on mobile via CSS */}
+            <button
+              className="menu-btn"
+              onClick={() => setIsSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              ☰
+            </button>
             <span className="room-emoji">{currentRoom === 'General' ? '💬' : '📁'}</span>
             <div>
               <h1 className="room-title">{currentRoom}</h1>
@@ -277,6 +300,7 @@ export default function ChatApp() {
           </button>
         </div>
       </div>
+
     </div>
   );
 }
