@@ -8,6 +8,7 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 const MAX_MESSAGE_LENGTH = 500;
 const BOT_SECRET = '156360yoseff!!!';
 const SESSION_KEY = 'livechat_session';
+const NOTIF_KEY = 'livechat_notifications';
 
 interface SessionData {
   username: string;
@@ -23,7 +24,6 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
 }
 
-// Register SW once and return the registration object
 async function initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
   try {
@@ -36,14 +36,12 @@ async function initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   }
 }
 
-// Subscribe to push for a specific room — uses existing SW registration
 async function subscribePushForRoom(
   email: string,
   room: string,
   reg: ServiceWorkerRegistration
 ): Promise<void> {
   if (Notification.permission === 'denied') return;
-
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') return;
 
@@ -62,8 +60,14 @@ async function subscribePushForRoom(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, room, subscription }),
   });
+}
 
-  console.log(`🔔 Push subscribed for #${room}`);
+async function unsubscribePushForRoom(email: string, room: string): Promise<void> {
+  await fetch(`${SOCKET_URL}/unsubscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, room }),
+  });
 }
 
 export default function ChatApp() {
@@ -81,17 +85,42 @@ export default function ChatApp() {
   const [newRoomName, setNewRoomName] = useState('');
   const [authError, setAuthError] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  // roomNotifications: true = on, false = off. Default true for all rooms.
+  const [roomNotifications, setRoomNotifications] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '{}'); } catch { return {}; }
+  });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const userEmailRef = useRef('');
   const swRegRef = useRef<ServiceWorkerRegistration | null>(null);
-  // Track which rooms we already subscribed push for (avoid duplicate POSTs)
   const pushedRoomsRef = useRef<Set<string>>(new Set());
 
-  // Detect bot mode from URL
   const isBotMode = new URLSearchParams(window.location.search).get('bot') === BOT_SECRET;
+
+  // Returns true if notifications are ON for a room (default: true)
+  const isNotifOn = (room: string) => roomNotifications[room] !== false;
+
+  const toggleRoomNotifications = async (room: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // don't trigger switchRoom
+    const wasOn = isNotifOn(room);
+    const updated = { ...roomNotifications, [room]: !wasOn };
+    setRoomNotifications(updated);
+    localStorage.setItem(NOTIF_KEY, JSON.stringify(updated));
+
+    if (wasOn) {
+      // Turning OFF — unsubscribe on server
+      await unsubscribePushForRoom(userEmailRef.current, room).catch(console.error);
+      pushedRoomsRef.current.delete(room);
+    } else {
+      // Turning ON — resubscribe
+      if (swRegRef.current && userEmailRef.current) {
+        pushedRoomsRef.current.add(room);
+        await subscribePushForRoom(userEmailRef.current, room, swRegRef.current).catch(console.error);
+      }
+    }
+  };
 
   const doAuthSuccess = (verifiedName: string, email: string, sock: Socket, idToken = '', isBot = false) => {
     setUsername(verifiedName);
@@ -100,17 +129,15 @@ export default function ChatApp() {
     setIsAuthenticated(true);
     setAuthError('');
 
-    // Persist session
     const session: SessionData = { username: verifiedName, email, idToken, isBot };
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
 
     sock.emit('join_room', 'General');
     setCurrentRoom('General');
 
-    // Init SW once and subscribe for General
     initServiceWorker().then(reg => {
       swRegRef.current = reg;
-      if (reg) {
+      if (reg && isNotifOn('General')) {
         pushedRoomsRef.current.add('General');
         subscribePushForRoom(email, 'General', reg).catch(console.error);
       }
@@ -124,17 +151,12 @@ export default function ChatApp() {
 
     newSocket.on('connect', () => {
       setIsConnected(true);
-
-      // On reconnect — restore session automatically
       const raw = sessionStorage.getItem(SESSION_KEY);
       if (raw) {
         try {
           const session: SessionData = JSON.parse(raw);
-          if (session.isBot) {
-            newSocket.emit('authenticate-bot', BOT_SECRET);
-          } else if (session.idToken) {
-            newSocket.emit('authenticate', session.idToken);
-          }
+          if (session.isBot) newSocket.emit('authenticate-bot', BOT_SECRET);
+          else if (session.idToken) newSocket.emit('authenticate', session.idToken);
         } catch { sessionStorage.removeItem(SESSION_KEY); }
       }
     });
@@ -142,7 +164,6 @@ export default function ChatApp() {
     newSocket.on('disconnect', () => setIsConnected(false));
 
     newSocket.on('auth-success', ({ username: verifiedName, email }: { username: string; email: string }) => {
-      // Only run full setup if not already authenticated (avoid duplicate on reconnect)
       if (!isAuthenticated) {
         doAuthSuccess(verifiedName, email, newSocket,
           JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}').idToken ?? '',
@@ -158,12 +179,12 @@ export default function ChatApp() {
 
     newSocket.on('user_joined', ({ username: joinedUser, users: updatedUsers }: UserJoinedData) => {
       setUsers(updatedUsers);
-      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${joinedUser} joined the room`, room: '', timestamp: Date.now() }]);
+      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${joinedUser} הצטרף לחדר`, room: '', timestamp: Date.now() }]);
     });
 
     newSocket.on('user_left', ({ username: leftUser, users: updatedUsers }: UserLeftData) => {
       setUsers(updatedUsers);
-      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${leftUser} left the room`, room: '', timestamp: Date.now() }]);
+      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${leftUser} עזב את החדר`, room: '', timestamp: Date.now() }]);
     });
 
     newSocket.on('user_typing', ({ username: typingUser, isTyping }: TypingData) => {
@@ -173,15 +194,9 @@ export default function ChatApp() {
     newSocket.on('room-creation-error', (error: string) => alert(error));
     newSocket.on('rate-limit-error', (error: string) => alert(error));
 
-    // Auto-login for bot mode on first load
     if (isBotMode) {
-      newSocket.once('connect', () => {
-        newSocket.emit('authenticate-bot', BOT_SECRET);
-      });
-      // If already connected
-      if (newSocket.connected) {
-        newSocket.emit('authenticate-bot', BOT_SECRET);
-      }
+      newSocket.once('connect', () => newSocket.emit('authenticate-bot', BOT_SECRET));
+      if (newSocket.connected) newSocket.emit('authenticate-bot', BOT_SECRET);
     }
 
     return () => { newSocket.close(); };
@@ -190,17 +205,16 @@ export default function ChatApp() {
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const handleGoogleSuccess = (idToken: string) => {
-    // Save idToken before auth-success fires
     const existing = sessionStorage.getItem(SESSION_KEY);
     const prev = existing ? JSON.parse(existing) : {};
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({ ...prev, idToken, isBot: false }));
     socketRef.current?.emit('authenticate', idToken);
   };
 
-  const handleGoogleError = () => { setAuthError('Failed to sign in with Google. Please try again.'); };
+  const handleGoogleError = () => { setAuthError('הכניסה נכשלה, נסה שנית.'); };
 
   const handleLogout = () => {
-    if (!window.confirm('Are you sure you want to logout?')) return;
+    if (!window.confirm('האם אתה בטוח שברצונך להתנתק?')) return;
     sessionStorage.removeItem(SESSION_KEY);
     pushedRoomsRef.current.clear();
     socketRef.current?.disconnect();
@@ -244,8 +258,7 @@ export default function ChatApp() {
       socket.emit('join_room', roomName);
       setMessages([]);
 
-      // Subscribe push only if we haven't done so for this room yet
-      if (swRegRef.current && userEmailRef.current && !pushedRoomsRef.current.has(roomName)) {
+      if (swRegRef.current && userEmailRef.current && !pushedRoomsRef.current.has(roomName) && isNotifOn(roomName)) {
         pushedRoomsRef.current.add(roomName);
         subscribePushForRoom(userEmailRef.current, roomName, swRegRef.current).catch(console.error);
       }
@@ -258,15 +271,21 @@ export default function ChatApp() {
   };
 
   const formatTime = (timestamp: number) =>
-    new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    new Date(timestamp).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+
+  // Typing indicator text
+  const typingText = typingUsers.length === 1
+    ? `${typingUsers[0]} מקליד...`
+    : typingUsers.length > 1
+      ? `${typingUsers.join(', ')} מקלידים...`
+      : '';
 
   if (!isAuthenticated) {
-    // Bot mode shows a minimal loading screen instead of login
     if (isBotMode) {
       return (
         <div className="login-container">
           <div className="login-card">
-            <h1 className="login-title">🤖 Connecting bot...</h1>
+            <h1 className="login-title">🤖 מחבר בוט...</h1>
             {authError && <p style={{ color: 'red' }}>{authError}</p>}
           </div>
         </div>
@@ -277,7 +296,7 @@ export default function ChatApp() {
       <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || ''}>
         <div className="login-container">
           <div className="login-card">
-            <h1 className="login-title">Real-Time Chat</h1>
+            <h1 className="login-title">LiveChat בזמן אמת</h1>
             {authError && <p style={{ color: 'red', marginBottom: '1rem' }}>{authError}</p>}
             <GoogleAuth onSuccess={handleGoogleSuccess} onError={handleGoogleError} />
           </div>
@@ -291,25 +310,33 @@ export default function ChatApp() {
       <div className={`sidebar-overlay ${isSidebarOpen ? 'open' : ''}`} onClick={() => setIsSidebarOpen(false)} />
       <div className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
-          <h2 className="sidebar-title">Rooms</h2>
-          <button className="sidebar-close-btn" onClick={() => setIsSidebarOpen(false)} aria-label="Close menu">✕</button>
+          <h2 className="sidebar-title">חדרים</h2>
+          <button className="sidebar-close-btn" onClick={() => setIsSidebarOpen(false)} aria-label="סגור תפריט">✕</button>
         </div>
         <div className="create-room-section">
           <input type="text" value={newRoomName} onChange={(e) => setNewRoomName(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleCreateRoom()}
-            className="create-room-input" placeholder="New room name..." />
-          <button onClick={handleCreateRoom} disabled={!newRoomName.trim()} className="create-room-button">➕ Create</button>
+            className="create-room-input" placeholder="שם חדר חדש..." />
+          <button onClick={handleCreateRoom} disabled={!newRoomName.trim()} className="create-room-button">➕ צור חדר</button>
         </div>
         <div className="rooms-list">
           {rooms.map(room => (
             <button key={room} onClick={() => switchRoom(room)} className={`room-item ${currentRoom === room ? 'active' : ''}`}>
               <span className="room-emoji">{room === 'General' ? '💬' : '📁'}</span>
               <span className="room-name">{room}</span>
+              <button
+                className={`notif-toggle ${isNotifOn(room) ? 'on' : 'off'}`}
+                onClick={(e) => toggleRoomNotifications(room, e)}
+                title={isNotifOn(room) ? 'כבה התראות' : 'הפעל התראות'}
+                aria-label={isNotifOn(room) ? 'כבה התראות' : 'הפעל התראות'}
+              >
+                {isNotifOn(room) ? '🔔' : '🔕'}
+              </button>
             </button>
           ))}
         </div>
         <div className="users-section">
-          <div className="users-title">Online users: {users.length}</div>
+          <div className="users-title">משתמשים מחוברים: {users.length}</div>
           {users.map((user: User) => (
             <div key={user.id} className="user-item">
               <div className="status-dot" />
@@ -323,7 +350,7 @@ export default function ChatApp() {
               <div className="current-user-name">{username}</div>
               <div className="current-user-email">{userEmail}</div>
             </div>
-            <button onClick={handleLogout} className="logout-button-small" title="Logout">🚪</button>
+            <button onClick={handleLogout} className="logout-button-small" title="התנתק">🚪</button>
           </div>
         </div>
       </div>
@@ -331,7 +358,7 @@ export default function ChatApp() {
       <div className="main-chat">
         <div className="chat-header">
           <div className="header-info">
-            <button className="menu-btn" onClick={() => setIsSidebarOpen(true)} aria-label="Open menu">☰</button>
+            <button className="menu-btn" onClick={() => setIsSidebarOpen(true)} aria-label="פתח תפריט">☰</button>
             <span className="room-emoji">{currentRoom === 'General' ? '💬' : '📁'}</span>
             <div>
               <h1 className="room-title">{currentRoom}</h1>
@@ -341,9 +368,9 @@ export default function ChatApp() {
           <div className="header-actions">
             <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
               <div className={`status-dot ${!isConnected ? 'disconnected' : ''}`} />
-              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
+              <span>{isConnected ? 'מחובר' : 'מנותק'}</span>
             </div>
-            <button onClick={handleLogout} className="logout-button-header" title="Logout">🚪</button>
+            <button onClick={handleLogout} className="logout-button-header" title="התנתק">🚪</button>
           </div>
         </div>
 
@@ -362,18 +389,16 @@ export default function ChatApp() {
             </div>
           ))}
           {typingUsers.length > 0 && (
-            <div className="typing-indicator">
-              {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
-            </div>
+            <div className="typing-indicator">{typingText}</div>
           )}
           <div ref={messagesEndRef} />
         </div>
 
         <div className="message-input-area">
-          <input type="text" value={messageInput} onChange={handleTyping} onKeyPress={handleKeyPress}
-            className="message-input" placeholder="Type a message..." maxLength={MAX_MESSAGE_LENGTH} />
+          <button onClick={handleSendMessage} disabled={!messageInput.trim()} className="send-button">שלח</button>
           <div className="char-counter">{messageInput.length}/{MAX_MESSAGE_LENGTH}</div>
-          <button onClick={handleSendMessage} disabled={!messageInput.trim()} className="send-button">Send</button>
+          <input type="text" value={messageInput} onChange={handleTyping} onKeyPress={handleKeyPress}
+            className="message-input" placeholder="הקלד הודעה..." maxLength={MAX_MESSAGE_LENGTH} />
         </div>
       </div>
     </div>
