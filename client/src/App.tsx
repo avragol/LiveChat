@@ -25,7 +25,7 @@ async function registerPush(email: string): Promise<void> {
   const existing = await reg.pushManager.getSubscription();
   const subscription = existing ?? await reg.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey),
+    applicationServerKey: urlBase64ToUint8Array(publicKey).buffer as ArrayBuffer,
   });
 
   await fetch(`${SOCKET_URL}/subscribe`, {
