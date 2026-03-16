@@ -11,13 +11,16 @@ export const db = createClient({
 });
 
 export async function initDb(): Promise<void> {
-  await db.executeMultiple(`
+  // executeMultiple is not supported over HTTP — run each statement separately
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS rooms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    );
+    )
+  `);
 
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL,
@@ -25,10 +28,10 @@ export async function initDb(): Promise<void> {
       text TEXT NOT NULL,
       room TEXT NOT NULL,
       timestamp INTEGER NOT NULL
-    );
-
-    INSERT OR IGNORE INTO rooms (name) VALUES ('General');
+    )
   `);
+
+  await db.execute(`INSERT OR IGNORE INTO rooms (name) VALUES ('General')`);
 
   console.log('✅ Database initialized');
 }
