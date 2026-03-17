@@ -10,13 +10,11 @@ const BOT_SECRET = '156360yoseff!!!';
 const SESSION_KEY = 'livechat_session';
 const NOTIF_KEY = 'livechat_notifications';
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
-// Refresh 50 minutes before current TTL would expire — keeps session alive indefinitely
-const REFRESH_INTERVAL_MS = 50 * 60 * 1000; // 50 minutes
 
 interface SessionData {
   username: string;
   email: string;
-  sessionToken: string; // our JWT (replaces idToken)
+  sessionToken: string;
   isBot: boolean;
   expiresAt: number;
 }
@@ -130,7 +128,6 @@ export default function ChatApp() {
   const swRegRef = useRef<ServiceWorkerRegistration | null>(null);
   const pushedRoomsRef = useRef<Set<string>>(new Set());
   const roomsRef = useRef<string[]>([]);
-  const refreshTimerRef = useRef<number | null>(null);
 
   const isBotMode = new URLSearchParams(window.location.search).get('bot') === BOT_SECRET;
 
@@ -138,41 +135,13 @@ export default function ChatApp() {
 
   useEffect(() => { roomsRef.current = rooms; }, [rooms]);
 
-  // ── Silent token refresh ───────────────────────────────────────────────────
+  // ── Wake-up ping ───────────────────────────────────────────────────────────
+  // Sent immediately on app load to wake the Render server before the socket
+  // connection or any user action. Fire-and-forget — errors are ignored.
 
-  const startRefreshTimer = (email: string) => {
-    if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
-    refreshTimerRef.current = window.setInterval(async () => {
-      const session = readSession();
-      if (!session || session.email !== email) return;
-      try {
-        const res = await fetch(`${SOCKET_URL}/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionToken: session.sessionToken }),
-        });
-        if (!res.ok) {
-          // Server rejected — force logout
-          clearSession();
-          window.location.reload();
-          return;
-        }
-        const data = await res.json() as { sessionToken: string; username: string; email: string };
-        writeSession({ sessionToken: data.sessionToken, username: data.username, email: data.email, isBot: false });
-        // Update socket auth token (for next reconnect)
-        console.log('🔄 Session token refreshed silently');
-      } catch (e) {
-        console.warn('Silent refresh failed:', e);
-      }
-    }, REFRESH_INTERVAL_MS);
-  };
-
-  const stopRefreshTimer = () => {
-    if (refreshTimerRef.current) {
-      clearInterval(refreshTimerRef.current);
-      refreshTimerRef.current = null;
-    }
-  };
+  useEffect(() => {
+    fetch(`${SOCKET_URL}/ping`).catch(() => {});
+  }, []);
 
   // ── Auth success handler ───────────────────────────────────────────────────
 
@@ -185,7 +154,6 @@ export default function ChatApp() {
 
     if (!isBot) {
       writeSession({ username: verifiedName, email, sessionToken, isBot });
-      startRefreshTimer(email);
     }
 
     sock.emit('join_room', 'General');
@@ -231,7 +199,6 @@ export default function ChatApp() {
 
     newSocket.on('auth-error', (msg: string) => {
       clearSession();
-      stopRefreshTimer();
       setAuthError(msg);
       setIsAuthenticated(false);
     });
@@ -273,7 +240,6 @@ export default function ChatApp() {
 
     return () => {
       newSocket.close();
-      stopRefreshTimer();
     };
   }, []);
 
@@ -283,23 +249,21 @@ export default function ChatApp() {
 
   const handleGoogleSuccess = async (idToken: string) => {
     try {
-      // Exchange Google id_token for our own session_token via the server
       const res = await fetch(`${SOCKET_URL}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idToken }),
       });
       if (!res.ok) {
-        setAuthError('הכניסה נכשלה, נסה שנית.');
+        const err = await res.json().catch(() => ({})) as { error?: string };
+        setAuthError(err.error || 'הכניסה נכשלה, נסה שנית.');
         return;
       }
       const data = await res.json() as { sessionToken: string; username: string; email: string };
-      // Persist session
       writeSession({ sessionToken: data.sessionToken, username: data.username, email: data.email, isBot: false });
-      // Authenticate socket with our JWT (not the Google id_token)
       socketRef.current?.emit('authenticate', data.sessionToken);
     } catch {
-      setAuthError('שגיאת רשת, נסה שנית.');
+      setAuthError('שגיאת רשת — השרת אולי מתעורר, נסה שוב בעוד שנייה.');
     }
   };
 
@@ -311,7 +275,6 @@ export default function ChatApp() {
     if (!window.confirm('האם אתה בטוח שברצונך להתנתק?')) return;
     const session = readSession();
     if (session?.sessionToken) {
-      // Notify server to delete the stored session
       fetch(`${SOCKET_URL}/auth/logout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -319,7 +282,6 @@ export default function ChatApp() {
       }).catch(console.error);
     }
     clearSession();
-    stopRefreshTimer();
     pushedRoomsRef.current.clear();
     socketRef.current?.disconnect();
     socketRef.current?.connect();
@@ -526,3 +488,4 @@ export default function ChatApp() {
     </div>
   );
 }
+
