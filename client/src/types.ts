@@ -8,6 +8,7 @@ export interface User {
 export interface Message {
   id: string;
   username: string;
+  email: string;
   text: string;
   room: string;
   timestamp: number;
