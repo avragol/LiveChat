@@ -1,4 +1,4 @@
-const CACHE_NAME = 'livechat-v1';
+const CACHE_NAME = 'livechat-v2';
 const OFFLINE_ASSETS = [
   '/',
   '/index.html',
@@ -23,21 +23,16 @@ self.addEventListener('activate', (event) => {
 });
 
 // ── Fetch: network-first, fallback to cache ───────────────────────────────────
-// For the chat API / socket we always go network.
-// For static assets we do network-first with cache fallback.
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip cross-origin requests (socket server, Google OAuth, etc.)
   if (url.origin !== self.location.origin) return;
-  // Skip non-GET
   if (request.method !== 'GET') return;
 
   event.respondWith(
     fetch(request)
       .then((response) => {
-        // Cache a fresh copy of navigations and static assets
         if (response.ok) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
@@ -54,21 +49,17 @@ self.addEventListener('push', (event) => {
 
   const data = event.data.json();
 
-  // Backup guard: if the app is open and the user is already viewing this room,
-  // the socket delivers the message in real-time — suppress the OS notification.
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: false }).then((clientList) => {
       const isAppFocused = clientList.some(
         (client) => client.visibilityState === 'visible'
       );
-      if (isAppFocused) {
-        // App is open — message already arrived via socket. No OS notification needed.
-        return;
-      }
+      if (isAppFocused) return;
+
       return self.registration.showNotification(data.title, {
         body: data.body,
         icon: '/icons/icon-192.png',
-        badge: '/icons/icon-192.png',
+        badge: '/icons/badge-heart.png',
         tag: `livechat-${data.room}`,
         renotify: true,
         data: { room: data.room },
@@ -89,4 +80,3 @@ self.addEventListener('notificationclick', (event) => {
     })
   );
 });
-
