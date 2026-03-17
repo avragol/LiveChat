@@ -4,6 +4,23 @@ import { GoogleOAuthProvider } from '@react-oauth/google';
 import GoogleAuth from './GoogleAuth';
 import { Message, User, UserJoinedData, TypingData } from './types';
 
+// ── User color helper (Issue #25) ────────────────────────────────────────────
+// Deterministic color per email — no DB storage needed.
+const USER_COLORS = [
+  '#e53e3e', '#dd6b20', '#d69e2e', '#38a169',
+  '#319795', '#3182ce', '#805ad5', '#d53f8c',
+  '#c05621', '#2b6cb0',
+];
+
+function getUserColor(email: string): string {
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) {
+    hash = (hash * 31 + email.charCodeAt(i)) >>> 0;
+  }
+  return USER_COLORS[hash % USER_COLORS.length]!;
+}
+
+
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 const MAX_MESSAGE_LENGTH = 500;
 const BOT_SECRET = '156360yoseff!!!';
@@ -117,6 +134,8 @@ export default function ChatApp() {
   const [newRoomName, setNewRoomName] = useState('');
   const [authError, setAuthError] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [editingRoom, setEditingRoom] = useState<string | null>(null);
+  const [editRoomName, setEditRoomName] = useState('');
   const [roomNotifications, setRoomNotifications] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '{}'); } catch { return {}; }
   });
@@ -226,6 +245,13 @@ export default function ChatApp() {
       }
     });
 
+    newSocket.on('room-renamed', ({ oldName, newName }: { oldName: string; newName: string }) => {
+      setRooms(prev => prev.map(r => r === oldName ? newName : r));
+      roomsRef.current = roomsRef.current.map(r => r === oldName ? newName : r);
+      setCurrentRoom(prev => prev === oldName ? newName : prev);
+      setMessages(prev => prev.map(m => m.room === oldName ? { ...m, room: newName } : m));
+    });
+
     newSocket.on('previous_messages', (msgs: Message[]) => setMessages(msgs));
     newSocket.on('new_message', (msg: Message) => setMessages(prev => [...prev, msg]));
 
@@ -278,6 +304,26 @@ export default function ChatApp() {
   };
 
   const handleGoogleError = () => { setAuthError('הכניסה נכשלה, נסה שנית.'); };
+
+  // ── Rename room (Issue #26) ───────────────────────────────────────────────
+
+  const startEditingRoom = (room: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingRoom(room);
+    setEditRoomName(room);
+  };
+
+  const commitRenameRoom = (oldName: string) => {
+    const newName = editRoomName.trim();
+    setEditingRoom(null);
+    if (!newName || newName === oldName) return;
+    socketRef.current?.emit('rename-room', { oldName, newName });
+  };
+
+  const cancelEditRoom = () => {
+    setEditingRoom(null);
+    setEditRoomName('');
+  };
 
   // ── Logout ─────────────────────────────────────────────────────────────────
 
@@ -420,18 +466,48 @@ export default function ChatApp() {
         </div>
         <div className="rooms-list">
           {rooms.map(room => (
-            <button key={room} onClick={() => switchRoom(room)} className={`room-item ${currentRoom === room ? 'active' : ''}`}>
-              <span className="room-emoji">{room === 'General' ? '💬' : '📁'}</span>
-              <span className="room-name">{room}</span>
-              <button
-                className={`notif-toggle ${isNotifOn(room) ? 'on' : 'off'}`}
-                onClick={(e) => toggleRoomNotifications(room, e)}
-                title={isNotifOn(room) ? 'כבה התראות' : 'הפעל התראות'}
-                aria-label={isNotifOn(room) ? 'כבה התראות' : 'הפעל התראות'}
-              >
-                {isNotifOn(room) ? '🔔' : '🔕'}
-              </button>
-            </button>
+            <div key={room} className={`room-item ${currentRoom === room ? 'active' : ''}`}>
+              {editingRoom === room ? (
+                <div className="room-edit-inline" onClick={e => e.stopPropagation()}>
+                  <input
+                    autoFocus
+                    className="room-edit-input"
+                    value={editRoomName}
+                    onChange={e => setEditRoomName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitRenameRoom(room);
+                      if (e.key === 'Escape') cancelEditRoom();
+                    }}
+                    onBlur={() => commitRenameRoom(room)}
+                    maxLength={30}
+                  />
+                </div>
+              ) : (
+                <button
+                  className="room-item-btn"
+                  onClick={() => switchRoom(room)}
+                >
+                  <span className="room-emoji">{room === 'General' ? '💬' : '📁'}</span>
+                  <span className="room-name">{room}</span>
+                </button>
+              )}
+              <div className="room-item-actions">
+                <button
+                  className="room-rename-btn"
+                  onClick={e => startEditingRoom(room, e)}
+                  title="שנה שם חדר"
+                  aria-label="שנה שם חדר"
+                >✏️</button>
+                <button
+                  className={`notif-toggle ${isNotifOn(room) ? 'on' : 'off'}`}
+                  onClick={(e) => toggleRoomNotifications(room, e)}
+                  title={isNotifOn(room) ? 'כבה התראות' : 'הפעל התראות'}
+                  aria-label={isNotifOn(room) ? 'כבה התראות' : 'הפעל התראות'}
+                >
+                  {isNotifOn(room) ? '🔔' : '🔕'}
+                </button>
+              </div>
+            </div>
           ))}
         </div>
         <div className="users-section">
@@ -474,15 +550,30 @@ export default function ChatApp() {
         </div>
 
         <div className="messages-area">
-          {messages.map((msg: Message) => (
-            <div key={msg.id} className="message">
-              <div className={`message-bubble ${msg.username === username ? 'own' : 'other'}`}>
-                {msg.username !== username && <div className="message-sender">{msg.username}</div>}
-                <div className="message-text">{msg.text}</div>
-                <div className="message-time">{formatTime(msg.timestamp)}</div>
+          {messages.map((msg: Message, idx: number) => {
+            const prev = messages[idx - 1];
+            const isGrouped =
+              !!prev &&
+              prev.email === msg.email &&
+              msg.timestamp - prev.timestamp < 600_000;
+            const isOwn = msg.username === username;
+            return (
+              <div key={msg.id} className={`message${isGrouped ? ' grouped' : ''}`}>
+                <div className={`message-bubble ${isOwn ? 'own' : 'other'}`}>
+                  {!isOwn && !isGrouped && (
+                    <div
+                      className="message-sender"
+                      style={{ color: getUserColor(msg.email) }}
+                    >
+                      {msg.username}
+                    </div>
+                  )}
+                  <div className="message-text">{msg.text}</div>
+                  <div className="message-time">{formatTime(msg.timestamp)}</div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {typingUsers.length > 0 && (
             <div className="typing-indicator">{typingText}</div>
           )}
