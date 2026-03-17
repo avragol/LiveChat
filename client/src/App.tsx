@@ -380,6 +380,11 @@ export default function ChatApp() {
       <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || ''}>
         <div className="login-container">
           <div className="login-card">
+            <img
+              src="/icons/icon-192.png"
+              alt="LiveChat Logo"
+              style={{ width: '100px', height: '100px', borderRadius: '50%', marginBottom: '1rem', objectFit: 'cover' }}
+            />
             <h1 className="login-title">LiveChat בזמן אמת</h1>
             {authError && <p style={{ color: 'red', marginBottom: '1rem' }}>{authError}</p>}
             <GoogleAuth onSuccess={handleGoogleSuccess} onError={handleGoogleError} />
