@@ -198,7 +198,7 @@ cd client && npm run dev
 | Service | URL |
 |---|---|
 | Server (Node.js) | `https://livechat-server-xxxx.onrender.com` |
-| Client (Static Site) | `https://livechat-0im1.onrender.com` |
+| Client (Static Site) | `https://livechat-xxxx.onrender.com` |
 
 משתני סביבה מוגדרים ב-Render dashboard — לא נשמרים בקוד.
 
@@ -243,7 +243,3 @@ LiveChat/
 ```
 
 ---
-
-<div align="center">
-  Made with ❤️ · Built on Socket.IO, Turso & React
-</div>
