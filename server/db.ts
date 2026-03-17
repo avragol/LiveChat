@@ -61,6 +61,16 @@ export async function roomExists(name: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+export async function renameRoom(oldName: string, newName: string): Promise<void> {
+  // Cascade: update rooms table, then all messages and push_subscriptions
+  // that reference the room by name.
+  await db.batch([
+    { sql: 'UPDATE rooms SET name = ? WHERE name = ?', args: [newName, oldName] },
+    { sql: 'UPDATE messages SET room = ? WHERE room = ?', args: [newName, oldName] },
+    { sql: 'UPDATE push_subscriptions SET room = ? WHERE room = ?', args: [newName, oldName] },
+  ]);
+}
+
 export async function getRoomCount(): Promise<number> {
   const result = await db.execute('SELECT COUNT(*) as count FROM rooms');
   return (result.rows[0]?.count as number) ?? 0;
