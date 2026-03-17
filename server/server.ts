@@ -292,13 +292,13 @@ io.on('connection', (socket: Socket) => {
     if (!room || room.trim() === '') return;
     if (user.room) {
       socket.leave(user.room);
-      io.to(user.room).emit('user_left', { username: user.username, users: getUsersInRoom(user.room) });
+      io.to(user.room).emit('users-update', { users: getUsersInRoom(user.room) });
     }
     user.room = room;
     socket.join(room);
     const history = await getRecentMessages(room);
     socket.emit('previous_messages', history);
-    io.to(room).emit('user_joined', { username: user.username, users: getUsersInRoom(room) });
+    io.to(room).emit('users-update', { users: getUsersInRoom(room) });
     console.log(`${user.username} joined room: ${room}`);
   });
 
@@ -347,7 +347,7 @@ io.on('connection', (socket: Socket) => {
   socket.on('disconnect', () => {
     const user = authenticatedUsers.get(socket.id);
     if (user?.room) {
-      io.to(user.room).emit('user_left', { username: user.username, users: getUsersInRoom(user.room) });
+      io.to(user.room).emit('users-update', { users: getUsersInRoom(user.room) });
     }
     authenticatedUsers.delete(socket.id);
     rateLimits.delete(socket.id);
@@ -367,3 +367,4 @@ initDb().then(() => {
   console.error('Failed to initialize DB:', err);
   process.exit(1);
 });
+

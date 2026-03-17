@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import GoogleAuth from './GoogleAuth';
-import { Message, User, UserJoinedData, UserLeftData, TypingData } from './types';
+import { Message, User, UserJoinedData, TypingData } from './types';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 const MAX_MESSAGE_LENGTH = 500;
@@ -216,14 +216,8 @@ export default function ChatApp() {
     newSocket.on('previous_messages', (msgs: Message[]) => setMessages(msgs));
     newSocket.on('new_message', (msg: Message) => setMessages(prev => [...prev, msg]));
 
-    newSocket.on('user_joined', ({ username: joinedUser, users: updatedUsers }: UserJoinedData) => {
+    newSocket.on('users-update', ({ users: updatedUsers }: { users: UserJoinedData['users'] }) => {
       setUsers(updatedUsers);
-      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${joinedUser} הצטרף לחדר`, room: '', timestamp: Date.now() }]);
-    });
-
-    newSocket.on('user_left', ({ username: leftUser, users: updatedUsers }: UserLeftData) => {
-      setUsers(updatedUsers);
-      setMessages(prev => [...prev, { id: `system-${Date.now()}`, username: 'System', email: '', text: `${leftUser} עזב את החדר`, room: '', timestamp: Date.now() }]);
     });
 
     newSocket.on('user_typing', ({ username: typingUser, isTyping }: TypingData) => {
@@ -465,16 +459,12 @@ export default function ChatApp() {
 
         <div className="messages-area">
           {messages.map((msg: Message) => (
-            <div key={msg.id} className={`message ${msg.username === 'System' ? 'system' : ''}`}>
-              {msg.username === 'System' ? (
-                <div className="system-message">{msg.text}</div>
-              ) : (
-                <div className={`message-bubble ${msg.username === username ? 'own' : 'other'}`}>
-                  {msg.username !== username && <div className="message-sender">{msg.username}</div>}
-                  <div className="message-text">{msg.text}</div>
-                  <div className="message-time">{formatTime(msg.timestamp)}</div>
-                </div>
-              )}
+            <div key={msg.id} className="message">
+              <div className={`message-bubble ${msg.username === username ? 'own' : 'other'}`}>
+                {msg.username !== username && <div className="message-sender">{msg.username}</div>}
+                <div className="message-text">{msg.text}</div>
+                <div className="message-time">{formatTime(msg.timestamp)}</div>
+              </div>
             </div>
           ))}
           {typingUsers.length > 0 && (
@@ -493,4 +483,5 @@ export default function ChatApp() {
     </div>
   );
 }
+
 
