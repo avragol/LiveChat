@@ -72,20 +72,29 @@ function signJwt(payload: Record<string, unknown>): string {
   return `${header}.${body}.${sig}`;
 }
 
+type JwtVerifyResult =
+  | { ok: true;  payload: { email: string; name: string; exp: number } }
+  | { ok: false; reason: 'malformed' | 'invalid_signature' | 'expired' };
+
 function verifyJwt(token: string): { email: string; name: string; exp: number } | null {
+  const r = verifyJwtDetailed(token);
+  return r.ok ? r.payload : null;
+}
+
+function verifyJwtDetailed(token: string): JwtVerifyResult {
   try {
     const parts = token.split('.');
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) return { ok: false, reason: 'malformed' };
     const [header, body, sig] = parts as [string, string, string];
     const expected = b64url(createHmac('sha256', JWT_SECRET!).update(`${header}.${body}`).digest());
     const sigBuf      = Buffer.from(sig,      'base64');
     const expectedBuf = Buffer.from(expected, 'base64');
-    if (sigBuf.length !== expectedBuf.length) return null;
-    if (!timingSafeEqual(sigBuf, expectedBuf)) return null;
+    if (sigBuf.length !== expectedBuf.length) return { ok: false, reason: 'invalid_signature' };
+    if (!timingSafeEqual(sigBuf, expectedBuf)) return { ok: false, reason: 'invalid_signature' };
     const payload = JSON.parse(Buffer.from(body, 'base64').toString());
-    if (Date.now() > payload.exp) return null;
-    return payload;
-  } catch { return null; }
+    if (Date.now() > payload.exp) return { ok: false, reason: 'expired' };
+    return { ok: true, payload };
+  } catch { return { ok: false, reason: 'malformed' }; }
 }
 
 function issueSessionToken(email: string, name: string): string {
@@ -261,19 +270,28 @@ io.on('connection', (socket: Socket) => {
    * authenticate — accepts our 14-day session JWT.
    */
   socket.on('authenticate', async (token: string) => {
-    if (typeof token !== 'string') { socket.emit('auth-error', 'Invalid token'); return; }
-
-    const jwtPayload = verifyJwt(token);
-    if (jwtPayload) {
-      authenticatedUsers.set(socket.id, { username: jwtPayload.name, email: jwtPayload.email, room: '' });
-      const rooms = await getRooms();
-      socket.emit('auth-success', { username: jwtPayload.name, email: jwtPayload.email });
-      socket.emit('room-list-update', rooms);
-      console.log(`✅ JWT auth: ${jwtPayload.name} (${jwtPayload.email})`);
+    if (typeof token !== 'string') {
+      console.warn(`⚠️  [auth] socket ${socket.id} sent non-string token`);
+      socket.emit('auth-error', 'Invalid token');
       return;
     }
 
-    socket.emit('auth-error', 'Token expired or invalid — please log in again');
+    const result = verifyJwtDetailed(token);
+
+    if (result.ok) {
+      authenticatedUsers.set(socket.id, { username: result.payload.name, email: result.payload.email, room: '' });
+      const rooms = await getRooms();
+      socket.emit('auth-success', { username: result.payload.name, email: result.payload.email });
+      socket.emit('room-list-update', rooms);
+      console.log(`✅ JWT auth: ${result.payload.name} (${result.payload.email})`);
+      return;
+    }
+
+    console.warn(`⚠️  [auth] socket ${socket.id} — token rejected: ${result.reason}`);
+    const msg = result.reason === 'expired'
+      ? 'Token expired — please log in again'
+      : 'Invalid token — please log in again';
+    socket.emit('auth-error', msg);
   });
 
   socket.on('authenticate-bot', async (secret: string) => {

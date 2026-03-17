@@ -128,12 +128,14 @@ export default function ChatApp() {
   const swRegRef = useRef<ServiceWorkerRegistration | null>(null);
   const pushedRoomsRef = useRef<Set<string>>(new Set());
   const roomsRef = useRef<string[]>([]);
+  const isAuthenticatedRef = useRef(false);
 
   const isBotMode = new URLSearchParams(window.location.search).get('bot') === BOT_SECRET;
 
   const isNotifOn = (room: string) => roomNotifications[room] !== false;
 
   useEffect(() => { roomsRef.current = rooms; }, [rooms]);
+  useEffect(() => { isAuthenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
 
   // ── Wake-up ping ───────────────────────────────────────────────────────────
   // Sent immediately on app load to wake the Render server before the socket
@@ -172,7 +174,10 @@ export default function ChatApp() {
   // ── Socket setup ───────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const newSocket = io(SOCKET_URL, { autoConnect: true });
+    // autoConnect:false prevents the socket from firing 'connect' before
+    // we've had a chance to read the session from localStorage — eliminating
+    // the race condition where the connect handler runs with no session yet.
+    const newSocket = io(SOCKET_URL, { autoConnect: false });
     socketRef.current = newSocket;
     setSocket(newSocket);
 
@@ -191,16 +196,24 @@ export default function ChatApp() {
     newSocket.on('disconnect', () => setIsConnected(false));
 
     newSocket.on('auth-success', ({ username: verifiedName, email }: { username: string; email: string }) => {
-      if (!isAuthenticated) {
+      // Use ref to avoid stale closure — isAuthenticated from the closure would
+      // always be the initial `false` value captured at mount time.
+      if (!isAuthenticatedRef.current) {
         const session = readSession();
         doAuthSuccess(verifiedName, email, newSocket, session?.sessionToken ?? '', session?.isBot ?? false);
       }
     });
 
     newSocket.on('auth-error', (msg: string) => {
-      clearSession();
+      // Only wipe the session for definitive token rejections.
+      // Transient network errors should not log the user out.
+      const isTokenRejection = msg.toLowerCase().includes('expired') || msg.toLowerCase().includes('invalid');
+      if (isTokenRejection) {
+        clearSession();
+        isAuthenticatedRef.current = false;
+        setIsAuthenticated(false);
+      }
       setAuthError(msg);
-      setIsAuthenticated(false);
     });
 
     newSocket.on('room-list-update', (updatedRooms: string[]) => {
@@ -229,8 +242,11 @@ export default function ChatApp() {
 
     if (isBotMode) {
       newSocket.once('connect', () => newSocket.emit('authenticate-bot', BOT_SECRET));
-      if (newSocket.connected) newSocket.emit('authenticate-bot', BOT_SECRET);
     }
+
+    // Connect only after all listeners are registered and we've confirmed the
+    // session exists — this eliminates the race condition entirely.
+    newSocket.connect();
 
     return () => {
       newSocket.close();
