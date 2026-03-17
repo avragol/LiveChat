@@ -12,7 +12,7 @@ import {
   getRecentMessages, saveMessage,
   savePushSubscription, getPushSubscriptionsForRoom, deletePushSubscription,
   unsubscribeUserFromRoom,
-  upsertUserSession, getUserSession, deleteUserSession,
+  upsertUserSession, deleteUserSession,
   type Message,
 } from './db.js';
 
@@ -54,11 +54,7 @@ if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
 
 // ── Google OAuth client ───────────────────────────────────────────────────────
 
-const googleClient = new OAuth2Client(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  'postmessage', // used when frontend sends the auth code via credential response
-);
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── Minimal JWT implementation (no extra deps) ────────────────────────────────
 // Header: { alg: "HS256", typ: "JWT" }
@@ -107,31 +103,6 @@ async function verifyGoogleToken(idToken: string): Promise<{ name: string; email
     const payload = ticket.getPayload();
     if (!payload?.email || !payload?.name) return null;
     return { name: payload.name, email: payload.email };
-  } catch { return null; }
-}
-
-// ── Google Token Refresh ───────────────────────────────────────────────────────
-// Uses the stored refresh_token to obtain a fresh access_token from Google.
-// We don't actually need the access_token ourselves — we just confirm Google
-// still trusts the user, then re-issue our own session_token.
-
-async function refreshGoogleSession(refreshToken: string): Promise<{ email: string; name: string } | null> {
-  try {
-    const res = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: process.env.GOOGLE_CLIENT_ID!,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as { id_token?: string };
-    if (!data.id_token) return null;
-    // Verify the fresh id_token to get user info
-    return await verifyGoogleToken(data.id_token);
   } catch { return null; }
 }
 
@@ -200,6 +171,15 @@ async function sendPushToRoom(message: Message, senderEmail: string): Promise<vo
 
 // ── REST endpoints ────────────────────────────────────────────────────────────
 
+/**
+ * GET /ping
+ * Lightweight health-check endpoint. The client calls this immediately on load
+ * to wake the Render server before the socket connection is established.
+ */
+app.get('/ping', (_req, res) => {
+  res.json({ ok: true });
+});
+
 app.get('/vapid-public-key', (_req, res) => {
   res.json({ publicKey: VAPID_PUBLIC_KEY || null });
 });
@@ -208,17 +188,9 @@ app.get('/vapid-public-key', (_req, res) => {
  * POST /auth/google
  * Body: { idToken: string }
  *
- * 1. Verify Google id_token
- * 2. Exchange for access_token + refresh_token using the authorization code flow
- *    NOTE: @react-oauth/google returns an id_token (credential), NOT an auth code,
- *    so we verify the id_token directly. We don't get a refresh_token from this
- *    flow unless the user grants offline access. We store a synthetic refresh marker
- *    and use the id_token verification path for now; full offline flow requires
- *    switching the client to useGoogleLogin with access_type=offline.
- *
- * For now: verify id_token → issue our own 14-day session_token → store in DB.
- * The /auth/refresh endpoint will attempt a re-verify if the user still has
- * an active Google session (by calling tokeninfo endpoint).
+ * Verifies the Google id_token, issues a 14-day JWT session token, and
+ * stores the user in the DB. No refresh endpoint needed — the JWT lasts
+ * long enough that the user won't need to re-authenticate for two weeks.
  */
 app.post('/auth/google', async (req, res) => {
   const { idToken } = req.body as { idToken?: string };
@@ -233,81 +205,17 @@ app.post('/auth/google', async (req, res) => {
     return;
   }
 
-  // Store user in DB (refresh_token is the id_token itself — see refresh endpoint)
   await upsertUserSession(googleUser.email, googleUser.name, idToken);
 
   const sessionToken = issueSessionToken(googleUser.email, googleUser.name);
-  console.log(`🔑 Issued session token for ${googleUser.email}`);
+  console.log(`🔑 Issued 14-day session token for ${googleUser.email}`);
   res.json({ sessionToken, username: googleUser.name, email: googleUser.email });
-});
-
-/**
- * POST /auth/refresh
- * Body: { sessionToken: string }
- *
- * If our JWT is still valid → just re-issue a fresh one (extend TTL).
- * If expired → try to re-verify the stored Google token.
- * Returns: { sessionToken } or 401.
- */
-app.post('/auth/refresh', async (req, res) => {
-  const { sessionToken } = req.body as { sessionToken?: string };
-  if (!sessionToken || typeof sessionToken !== 'string') {
-    res.status(400).json({ error: 'Missing sessionToken' });
-    return;
-  }
-
-  // 1. Try to extend a still-valid session (most common case — called every 50 min)
-  const payload = verifyJwt(sessionToken);
-  if (payload) {
-    // Session still valid — just refresh the TTL
-    const newToken = issueSessionToken(payload.email, payload.name);
-    res.json({ sessionToken: newToken, username: payload.name, email: payload.email });
-    return;
-  }
-
-  // 2. Session expired — attempt recovery via stored token
-  // Extract email from expired token (without signature check on exp)
-  try {
-    const parts = sessionToken.split('.');
-    if (parts.length !== 3) throw new Error('bad format');
-    const expiredPayload = JSON.parse(Buffer.from(parts[1]!, 'base64').toString()) as { email?: string };
-    if (!expiredPayload.email) throw new Error('no email');
-
-    const session = await getUserSession(expiredPayload.email);
-    if (!session) {
-      res.status(401).json({ error: 'Session not found — please log in again' });
-      return;
-    }
-
-    // Try using the stored token as a fresh id_token (works if < 1hr old, rare)
-    const googleUser = await verifyGoogleToken(session.refreshToken);
-    if (googleUser) {
-      const newToken = issueSessionToken(googleUser.email, googleUser.name);
-      res.json({ sessionToken: newToken, username: googleUser.name, email: googleUser.email });
-      return;
-    }
-
-    // Fallback: try Google OAuth refresh (works only if we have a real refresh_token)
-    const refreshed = await refreshGoogleSession(session.refreshToken);
-    if (refreshed) {
-      await upsertUserSession(refreshed.email, refreshed.name, session.refreshToken);
-      const newToken = issueSessionToken(refreshed.email, refreshed.name);
-      res.json({ sessionToken: newToken, username: refreshed.name, email: refreshed.email });
-      return;
-    }
-
-    // Nothing worked — user must log in again
-    await deleteUserSession(expiredPayload.email);
-    res.status(401).json({ error: 'Session expired — please log in again' });
-  } catch {
-    res.status(401).json({ error: 'Invalid session' });
-  }
 });
 
 /**
  * POST /auth/logout
  * Body: { sessionToken: string }
- * Deletes the server-side session (refresh token).
+ * Deletes the server-side session record.
  */
 app.post('/auth/logout', async (req, res) => {
   const { sessionToken } = req.body as { sessionToken?: string };
@@ -350,14 +258,11 @@ io.on('connection', (socket: Socket) => {
   console.log('User connected:', socket.id);
 
   /**
-   * authenticate — accepts our session_token (JWT).
-   * Falls back to accepting a raw Google id_token for backwards compatibility
-   * (e.g. fresh login before the client calls /auth/google).
+   * authenticate — accepts our 14-day session JWT.
    */
   socket.on('authenticate', async (token: string) => {
     if (typeof token !== 'string') { socket.emit('auth-error', 'Invalid token'); return; }
 
-    // 1. Try our JWT first
     const jwtPayload = verifyJwt(token);
     if (jwtPayload) {
       authenticatedUsers.set(socket.id, { username: jwtPayload.name, email: jwtPayload.email, room: '' });
@@ -368,18 +273,7 @@ io.on('connection', (socket: Socket) => {
       return;
     }
 
-    // 2. Fallback: raw Google id_token (client just logged in, session_token not yet obtained)
-    const googleUser = await verifyGoogleToken(token);
-    if (googleUser) {
-      authenticatedUsers.set(socket.id, { username: googleUser.name, email: googleUser.email, room: '' });
-      const rooms = await getRooms();
-      socket.emit('auth-success', { username: googleUser.name, email: googleUser.email });
-      socket.emit('room-list-update', rooms);
-      console.log(`✅ Google id_token auth (legacy): ${googleUser.name}`);
-      return;
-    }
-
-    socket.emit('auth-error', 'Token verification failed — please log in again');
+    socket.emit('auth-error', 'Token expired or invalid — please log in again');
   });
 
   socket.on('authenticate-bot', async (secret: string) => {
@@ -438,15 +332,16 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('create-room', async (roomName: string) => {
     const user = authenticatedUsers.get(socket.id);
-    if (!user) { socket.emit('auth-error', 'Not authenticated'); return; }
-    if (!roomName || roomName.trim() === '') { socket.emit('room-creation-error', 'Room name cannot be empty'); return; }
-    const trimmed = roomName.trim();
-    if (await roomExists(trimmed)) { socket.emit('room-creation-error', 'Room already exists'); return; }
-    if (await getRoomCount() >= MAX_ROOMS) { socket.emit('room-creation-error', `Maximum number of rooms (${MAX_ROOMS}) reached`); return; }
-    await createRoom(trimmed);
+    if (!user) return;
+    if (typeof roomName !== 'string' || !roomName.trim()) return;
+    const name = roomName.trim().slice(0, 30);
+    if (await roomExists(name)) { socket.emit('room-creation-error', `חדר "${name}" כבר קיים`); return; }
+    const count = await getRoomCount();
+    if (count >= MAX_ROOMS) { socket.emit('room-creation-error', 'הגעת למגבלת החדרים'); return; }
+    await createRoom(name);
     const rooms = await getRooms();
     io.emit('room-list-update', rooms);
-    console.log(`New room created: ${trimmed} by ${user.username}`);
+    console.log(`🏠 Room created: ${name} by ${user.username}`);
   });
 
   socket.on('disconnect', () => {
@@ -456,16 +351,19 @@ io.on('connection', (socket: Socket) => {
     }
     authenticatedUsers.delete(socket.id);
     rateLimits.delete(socket.id);
-    console.log(`${user?.username ?? socket.id} disconnected`);
+    console.log('User disconnected:', socket.id);
   });
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
+// ── Bootstrap ────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3001;
+
 initDb().then(() => {
-  httpServer.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-}).catch(err => {
+  httpServer.listen(PORT, () => {
+    console.log(`🚀 Server listening on port ${PORT}`);
+  });
+}).catch((err: unknown) => {
   console.error('Failed to initialize DB:', err);
   process.exit(1);
 });
