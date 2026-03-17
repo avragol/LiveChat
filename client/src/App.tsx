@@ -1,4 +1,3 @@
-✅ input area fixed
 import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { GoogleOAuthProvider } from '@react-oauth/google';
@@ -496,3 +495,4 @@ export default function ChatApp() {
     </div>
   );
 }
+
