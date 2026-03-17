@@ -34,9 +34,18 @@ export async function initDb(): Promise<void> {
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE(email, room, subscription)
   )`);
+  // User sessions table — stores refresh_token per user (server-side only)
+  await db.execute(`CREATE TABLE IF NOT EXISTS user_sessions (
+    email TEXT PRIMARY KEY,
+    refresh_token TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
   await db.execute("INSERT OR IGNORE INTO rooms (name) VALUES ('General')");
   console.log('✅ Database initialized');
 }
+
+// ── Rooms ────────────────────────────────────────────────────────────────────
 
 export async function getRooms(): Promise<string[]> {
   const result = await db.execute('SELECT name FROM rooms ORDER BY created_at ASC');
@@ -56,6 +65,8 @@ export async function getRoomCount(): Promise<number> {
   const result = await db.execute('SELECT COUNT(*) as count FROM rooms');
   return (result.rows[0]?.count as number) ?? 0;
 }
+
+// ── Messages ─────────────────────────────────────────────────────────────────
 
 export async function getRecentMessages(room: string, limit = 50): Promise<Message[]> {
   const result = await db.execute({
@@ -78,6 +89,8 @@ export async function saveMessage(message: Message): Promise<void> {
     args: [message.id, message.username, message.email, message.text, message.room, message.timestamp],
   });
 }
+
+// ── Push Subscriptions ───────────────────────────────────────────────────────
 
 export async function savePushSubscription(email: string, room: string, subscription: string): Promise<void> {
   await db.execute({
@@ -107,6 +120,43 @@ export async function unsubscribeUserFromRoom(email: string, room: string): Prom
     args: [email, room],
   });
 }
+
+// ── User Sessions (refresh tokens) ──────────────────────────────────────────
+
+export async function upsertUserSession(email: string, displayName: string, refreshToken: string): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO user_sessions (email, display_name, refresh_token, updated_at)
+          VALUES (?, ?, ?, unixepoch())
+          ON CONFLICT(email) DO UPDATE SET
+            display_name = excluded.display_name,
+            refresh_token = excluded.refresh_token,
+            updated_at = unixepoch()`,
+    args: [email, displayName, refreshToken],
+  });
+}
+
+export async function getUserSession(email: string): Promise<{ email: string; displayName: string; refreshToken: string } | null> {
+  const result = await db.execute({
+    sql: 'SELECT email, display_name, refresh_token FROM user_sessions WHERE email = ?',
+    args: [email],
+  });
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    email: row.email as string,
+    displayName: row.display_name as string,
+    refreshToken: row.refresh_token as string,
+  };
+}
+
+export async function deleteUserSession(email: string): Promise<void> {
+  await db.execute({
+    sql: 'DELETE FROM user_sessions WHERE email = ?',
+    args: [email],
+  });
+}
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface Message {
   id: string;
