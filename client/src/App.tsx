@@ -10,23 +10,19 @@ const BOT_SECRET = '156360yoseff!!!';
 const SESSION_KEY = 'livechat_session';
 const NOTIF_KEY = 'livechat_notifications';
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+// Refresh 50 minutes before current TTL would expire — keeps session alive indefinitely
+const REFRESH_INTERVAL_MS = 50 * 60 * 1000; // 50 minutes
 
 interface SessionData {
   username: string;
   email: string;
-  idToken: string;
+  sessionToken: string; // our JWT (replaces idToken)
   isBot: boolean;
-  expiresAt: number; // unix ms
+  expiresAt: number;
 }
 
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
-}
+// ── Session helpers ────────────────────────────────────────────────────────────
 
-/** Read session from localStorage. Returns null if missing or expired. */
 function readSession(): SessionData | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -43,16 +39,23 @@ function readSession(): SessionData | null {
   }
 }
 
-/** Write session to localStorage with a fresh 14-day TTL. */
 function writeSession(data: Omit<SessionData, 'expiresAt'>): SessionData {
   const session: SessionData = { ...data, expiresAt: Date.now() + SESSION_TTL_MS };
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   return session;
 }
 
-/** Clear session from localStorage. */
 function clearSession(): void {
   localStorage.removeItem(SESSION_KEY);
+}
+
+// ── Push helpers ───────────────────────────────────────────────────────────────
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
 }
 
 async function initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
@@ -67,27 +70,18 @@ async function initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   }
 }
 
-async function subscribePushForRoom(
-  email: string,
-  room: string,
-  reg: ServiceWorkerRegistration
-): Promise<void> {
+async function subscribePushForRoom(email: string, room: string, reg: ServiceWorkerRegistration): Promise<void> {
   if (Notification.permission === 'denied') return;
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') return;
-
   const res = await fetch(`${SOCKET_URL}/vapid-public-key`);
   const { publicKey } = await res.json();
   if (!publicKey) return;
-
-  // Always get a fresh subscription — if it expired the browser issues a new one.
-  // Using getSubscription() first avoids an unnecessary unsubscribe/resubscribe cycle.
   const existing = await reg.pushManager.getSubscription();
   const subscription = existing ?? await reg.pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(publicKey).buffer as ArrayBuffer,
   });
-
   await fetch(`${SOCKET_URL}/subscribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -95,21 +89,9 @@ async function subscribePushForRoom(
   });
 }
 
-/**
- * Re-subscribe the user to ALL rooms they have notifications enabled for.
- * Called on every login (including silent resume) so the server always has
- * a fresh, valid subscription object.
- */
-async function resubscribeAllRooms(
-  email: string,
-  rooms: string[],
-  reg: ServiceWorkerRegistration,
-  notifPrefs: Record<string, boolean>
-): Promise<void> {
+async function resubscribeAllRooms(email: string, rooms: string[], reg: ServiceWorkerRegistration, notifPrefs: Record<string, boolean>): Promise<void> {
   const activeRooms = rooms.filter(r => notifPrefs[r] !== false);
-  await Promise.allSettled(
-    activeRooms.map(room => subscribePushForRoom(email, room, reg))
-  );
+  await Promise.allSettled(activeRooms.map(room => subscribePushForRoom(email, room, reg)));
 }
 
 async function unsubscribePushForRoom(email: string, room: string): Promise<void> {
@@ -119,6 +101,8 @@ async function unsubscribePushForRoom(email: string, room: string): Promise<void
     body: JSON.stringify({ email, room }),
   });
 }
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ChatApp() {
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -145,49 +129,64 @@ export default function ChatApp() {
   const userEmailRef = useRef('');
   const swRegRef = useRef<ServiceWorkerRegistration | null>(null);
   const pushedRoomsRef = useRef<Set<string>>(new Set());
-  // Holds the current room list so resubscribeAllRooms can access it after auth-success
   const roomsRef = useRef<string[]>([]);
+  const refreshTimerRef = useRef<number | null>(null);
 
   const isBotMode = new URLSearchParams(window.location.search).get('bot') === BOT_SECRET;
 
   const isNotifOn = (room: string) => roomNotifications[room] !== false;
 
-  // Keep roomsRef in sync with rooms state
   useEffect(() => { roomsRef.current = rooms; }, [rooms]);
 
-  const toggleRoomNotifications = async (room: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const wasOn = isNotifOn(room);
-    const updated = { ...roomNotifications, [room]: !wasOn };
-    setRoomNotifications(updated);
-    localStorage.setItem(NOTIF_KEY, JSON.stringify(updated));
+  // ── Silent token refresh ───────────────────────────────────────────────────
 
-    if (wasOn) {
-      await unsubscribePushForRoom(userEmailRef.current, room).catch(console.error);
-      pushedRoomsRef.current.delete(room);
-    } else {
-      if (swRegRef.current && userEmailRef.current) {
-        pushedRoomsRef.current.add(room);
-        await subscribePushForRoom(userEmailRef.current, room, swRegRef.current).catch(console.error);
+  const startRefreshTimer = (email: string) => {
+    if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
+    refreshTimerRef.current = window.setInterval(async () => {
+      const session = readSession();
+      if (!session || session.email !== email) return;
+      try {
+        const res = await fetch(`${SOCKET_URL}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionToken: session.sessionToken }),
+        });
+        if (!res.ok) {
+          // Server rejected — force logout
+          clearSession();
+          window.location.reload();
+          return;
+        }
+        const data = await res.json() as { sessionToken: string; username: string; email: string };
+        writeSession({ sessionToken: data.sessionToken, username: data.username, email: data.email, isBot: false });
+        // Update socket auth token (for next reconnect)
+        console.log('🔄 Session token refreshed silently');
+      } catch (e) {
+        console.warn('Silent refresh failed:', e);
       }
+    }, REFRESH_INTERVAL_MS);
+  };
+
+  const stopRefreshTimer = () => {
+    if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+      refreshTimerRef.current = null;
     }
   };
 
-  const doAuthSuccess = (
-    verifiedName: string,
-    email: string,
-    sock: Socket,
-    idToken = '',
-    isBot = false
-  ) => {
+  // ── Auth success handler ───────────────────────────────────────────────────
+
+  const doAuthSuccess = (verifiedName: string, email: string, sock: Socket, sessionToken = '', isBot = false) => {
     setUsername(verifiedName);
     setUserEmail(email);
     userEmailRef.current = email;
     setIsAuthenticated(true);
     setAuthError('');
 
-    // Persist session with a fresh 14-day TTL on every successful auth
-    writeSession({ username: verifiedName, email, idToken, isBot });
+    if (!isBot) {
+      writeSession({ username: verifiedName, email, sessionToken, isBot });
+      startRefreshTimer(email);
+    }
 
     sock.emit('join_room', 'General');
     setCurrentRoom('General');
@@ -195,17 +194,14 @@ export default function ChatApp() {
     initServiceWorker().then(reg => {
       swRegRef.current = reg;
       if (!reg) return;
-
-      // Re-subscribe to ALL rooms with notifications on — refreshes stale subscriptions
       const notifPrefs: Record<string, boolean> =
         (() => { try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '{}'); } catch { return {}; } })();
-
-      // roomsRef.current may not have the full list yet if room-list-update fires after auth-success.
-      // Subscribe to General immediately, then resubscribe the rest once rooms arrive.
       pushedRoomsRef.current.add('General');
       resubscribeAllRooms(email, ['General', ...roomsRef.current], reg, notifPrefs).catch(console.error);
     });
   };
+
+  // ── Socket setup ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, { autoConnect: true });
@@ -218,11 +214,8 @@ export default function ChatApp() {
       if (session) {
         if (session.isBot) {
           newSocket.emit('authenticate-bot', BOT_SECRET);
-        } else if (session.idToken) {
-          // Attempt silent re-auth using the stored Google id_token.
-          // The server verifies it; if it's expired Google will reject it and
-          // the socket will emit 'auth-error', which triggers the login screen.
-          newSocket.emit('authenticate', session.idToken);
+        } else if (session.sessionToken) {
+          newSocket.emit('authenticate', session.sessionToken);
         }
       }
     });
@@ -232,19 +225,13 @@ export default function ChatApp() {
     newSocket.on('auth-success', ({ username: verifiedName, email }: { username: string; email: string }) => {
       if (!isAuthenticated) {
         const session = readSession();
-        doAuthSuccess(
-          verifiedName,
-          email,
-          newSocket,
-          session?.idToken ?? '',
-          session?.isBot ?? false
-        );
+        doAuthSuccess(verifiedName, email, newSocket, session?.sessionToken ?? '', session?.isBot ?? false);
       }
     });
 
     newSocket.on('auth-error', (msg: string) => {
-      // Token rejected (expired or invalid) — clear stale session and show login
       clearSession();
+      stopRefreshTimer();
       setAuthError(msg);
       setIsAuthenticated(false);
     });
@@ -252,8 +239,6 @@ export default function ChatApp() {
     newSocket.on('room-list-update', (updatedRooms: string[]) => {
       setRooms(updatedRooms);
       roomsRef.current = updatedRooms;
-
-      // If already authenticated, re-subscribe to any newly discovered rooms
       if (swRegRef.current && userEmailRef.current) {
         const notifPrefs: Record<string, boolean> =
           (() => { try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '{}'); } catch { return {}; } })();
@@ -286,28 +271,55 @@ export default function ChatApp() {
       if (newSocket.connected) newSocket.emit('authenticate-bot', BOT_SECRET);
     }
 
-    return () => { newSocket.close(); };
+    return () => {
+      newSocket.close();
+      stopRefreshTimer();
+    };
   }, []);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  const handleGoogleSuccess = (idToken: string) => {
-    // Merge new idToken into existing session (or create fresh one)
-    const existing = readSession();
-    writeSession({
-      username: existing?.username ?? '',
-      email: existing?.email ?? '',
-      idToken,
-      isBot: false,
-    });
-    socketRef.current?.emit('authenticate', idToken);
+  // ── Google login ──────────────────────────────────────────────────────────
+
+  const handleGoogleSuccess = async (idToken: string) => {
+    try {
+      // Exchange Google id_token for our own session_token via the server
+      const res = await fetch(`${SOCKET_URL}/auth/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+      if (!res.ok) {
+        setAuthError('הכניסה נכשלה, נסה שנית.');
+        return;
+      }
+      const data = await res.json() as { sessionToken: string; username: string; email: string };
+      // Persist session
+      writeSession({ sessionToken: data.sessionToken, username: data.username, email: data.email, isBot: false });
+      // Authenticate socket with our JWT (not the Google id_token)
+      socketRef.current?.emit('authenticate', data.sessionToken);
+    } catch {
+      setAuthError('שגיאת רשת, נסה שנית.');
+    }
   };
 
   const handleGoogleError = () => { setAuthError('הכניסה נכשלה, נסה שנית.'); };
 
-  const handleLogout = () => {
+  // ── Logout ─────────────────────────────────────────────────────────────────
+
+  const handleLogout = async () => {
     if (!window.confirm('האם אתה בטוח שברצונך להתנתק?')) return;
+    const session = readSession();
+    if (session?.sessionToken) {
+      // Notify server to delete the stored session
+      fetch(`${SOCKET_URL}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionToken: session.sessionToken }),
+      }).catch(console.error);
+    }
     clearSession();
+    stopRefreshTimer();
     pushedRoomsRef.current.clear();
     socketRef.current?.disconnect();
     socketRef.current?.connect();
@@ -322,6 +334,8 @@ export default function ChatApp() {
     setMessageInput('');
     setIsSidebarOpen(false);
   };
+
+  // ── Messaging ──────────────────────────────────────────────────────────────
 
   const handleSendMessage = () => {
     if (!messageInput.trim() || !socket) return;
@@ -349,7 +363,6 @@ export default function ChatApp() {
       setCurrentRoom(roomName);
       socket.emit('join_room', roomName);
       setMessages([]);
-
       if (swRegRef.current && userEmailRef.current && !pushedRoomsRef.current.has(roomName) && isNotifOn(roomName)) {
         pushedRoomsRef.current.add(roomName);
         subscribePushForRoom(userEmailRef.current, roomName, swRegRef.current).catch(console.error);
@@ -362,6 +375,23 @@ export default function ChatApp() {
     if (socket && newRoomName.trim()) { socket.emit('create-room', newRoomName.trim()); setNewRoomName(''); }
   };
 
+  const toggleRoomNotifications = async (room: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const wasOn = isNotifOn(room);
+    const updated = { ...roomNotifications, [room]: !wasOn };
+    setRoomNotifications(updated);
+    localStorage.setItem(NOTIF_KEY, JSON.stringify(updated));
+    if (wasOn) {
+      await unsubscribePushForRoom(userEmailRef.current, room).catch(console.error);
+      pushedRoomsRef.current.delete(room);
+    } else {
+      if (swRegRef.current && userEmailRef.current) {
+        pushedRoomsRef.current.add(room);
+        await subscribePushForRoom(userEmailRef.current, room, swRegRef.current).catch(console.error);
+      }
+    }
+  };
+
   const formatTime = (timestamp: number) =>
     new Date(timestamp).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
 
@@ -370,6 +400,8 @@ export default function ChatApp() {
     : typingUsers.length > 1
       ? `${typingUsers.join(', ')} מקלידים...`
       : '';
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   if (!isAuthenticated) {
     if (isBotMode) {
@@ -382,7 +414,6 @@ export default function ChatApp() {
         </div>
       );
     }
-
     return (
       <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || ''}>
         <div className="login-container">
@@ -495,4 +526,3 @@ export default function ChatApp() {
     </div>
   );
 }
-
