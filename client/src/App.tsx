@@ -117,6 +117,32 @@ async function unsubscribePushForRoom(email: string, room: string): Promise<void
   });
 }
 
+// ── Message grouping helper (Issue #33) ─────────────────────────────────────
+
+interface MessageGroup {
+  key: string;
+  email: string;
+  username: string;
+  messages: Message[];
+}
+
+function groupMessages(messages: Message[]): MessageGroup[] {
+  const groups: MessageGroup[] = [];
+  for (const msg of messages) {
+    const last = groups[groups.length - 1];
+    if (
+      last &&
+      last.email === msg.email &&
+      msg.timestamp - last.messages[last.messages.length - 1]!.timestamp < 600_000
+    ) {
+      last.messages.push(msg);
+    } else {
+      groups.push({ key: msg.id, email: msg.email, username: msg.username, messages: [msg] });
+    }
+  }
+  return groups;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ChatApp() {
@@ -136,6 +162,8 @@ export default function ChatApp() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [editingRoom, setEditingRoom] = useState<string | null>(null);
   const [editRoomName, setEditRoomName] = useState('');
+  const [isReady, setIsReady] = useState(false);
+  const [expandedTimestamps, setExpandedTimestamps] = useState<Set<string>>(new Set());
   const [roomNotifications, setRoomNotifications] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '{}'); } catch { return {}; }
   });
@@ -252,7 +280,10 @@ export default function ChatApp() {
       setMessages(prev => prev.map(m => m.room === oldName ? { ...m, room: newName } : m));
     });
 
-    newSocket.on('previous_messages', (msgs: Message[]) => setMessages(msgs));
+    newSocket.on('previous_messages', (msgs: Message[]) => {
+      setMessages(msgs);
+      setIsReady(true);
+    });
     newSocket.on('new_message', (msg: Message) => setMessages(prev => [...prev, msg]));
 
     newSocket.on('users-update', ({ users: updatedUsers }: { users: UserJoinedData['users'] }) => {
@@ -450,6 +481,15 @@ export default function ChatApp() {
     );
   }
 
+  if (isAuthenticated && !isReady) {
+    return (
+      <div className="connecting-screen">
+        <div className="connecting-spinner" />
+        <p className="connecting-text">מתחבר לצ׳אט...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="chat-container">
       <div className={`sidebar-overlay ${isSidebarOpen ? 'open' : ''}`} onClick={() => setIsSidebarOpen(false)} />
@@ -550,26 +590,36 @@ export default function ChatApp() {
         </div>
 
         <div className="messages-area">
-          {messages.map((msg: Message, idx: number) => {
-            const prev = messages[idx - 1];
-            const isGrouped =
-              !!prev &&
-              prev.email === msg.email &&
-              msg.timestamp - prev.timestamp < 600_000;
-            const isOwn = msg.username === username;
+          {groupMessages(messages).map((group) => {
+            const isOwn = group.username === username;
             return (
-              <div key={msg.id} className={`message${isGrouped ? ' grouped' : ''}`}>
-                <div className={`message-bubble ${isOwn ? 'own' : 'other'}`}>
-                  {!isOwn && !isGrouped && (
+              <div key={group.key} className={`message-group ${isOwn ? 'own' : 'other'}`}>
+                {!isOwn && (
+                  <div
+                    className="message-group-header"
+                    style={{ color: getUserColor(group.email) }}
+                  >
+                    {group.username}
+                    <span className="message-group-time">{formatTime(group.messages[0]!.timestamp)}</span>
+                  </div>
+                )}
+                <div className="message-group-body">
+                  {group.messages.map((msg) => (
                     <div
-                      className="message-sender"
-                      style={{ color: getUserColor(msg.email) }}
+                      key={msg.id}
+                      className={`message-line ${isOwn ? 'own' : 'other'}`}
+                      onClick={() => setExpandedTimestamps(prev => {
+                        const next = new Set(prev);
+                        next.has(msg.id) ? next.delete(msg.id) : next.add(msg.id);
+                        return next;
+                      })}
                     >
-                      {msg.username}
+                      <span className="message-line-text">{msg.text}</span>
+                      {(expandedTimestamps.has(msg.id) || (isOwn && group.messages.length === 1)) && (
+                        <span className="message-line-timestamp">{formatTime(msg.timestamp)}</span>
+                      )}
                     </div>
-                  )}
-                  <div className="message-text">{msg.text}</div>
-                  <div className="message-time">{formatTime(msg.timestamp)}</div>
+                  ))}
                 </div>
               </div>
             );
