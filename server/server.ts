@@ -80,7 +80,7 @@ function verifyJwt(token: string): { email: string; name: string; exp: number } 
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
-    const [header, body, sig] = parts;
+    const [header, body, sig] = parts as [string, string, string];
     const expected = b64url(createHmac('sha256', JWT_SECRET!).update(`${header}.${body}`).digest());
     const sigBuf      = Buffer.from(sig,      'base64');
     const expectedBuf = Buffer.from(expected, 'base64');
@@ -270,7 +270,7 @@ app.post('/auth/refresh', async (req, res) => {
   try {
     const parts = sessionToken.split('.');
     if (parts.length !== 3) throw new Error('bad format');
-    const expiredPayload = JSON.parse(Buffer.from(parts[1], 'base64').toString()) as { email?: string };
+    const expiredPayload = JSON.parse(Buffer.from(parts[1]!, 'base64').toString()) as { email?: string };
     if (!expiredPayload.email) throw new Error('no email');
 
     const session = await getUserSession(expiredPayload.email);
@@ -315,7 +315,7 @@ app.post('/auth/logout', async (req, res) => {
   try {
     const parts = sessionToken.split('.');
     if (parts.length === 3) {
-      const p = JSON.parse(Buffer.from(parts[1], 'base64').toString()) as { email?: string };
+      const p = JSON.parse(Buffer.from(parts[1]!, 'base64').toString()) as { email?: string };
       if (p.email) await deleteUserSession(p.email);
     }
   } catch { /* ignore */ }
