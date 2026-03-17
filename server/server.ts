@@ -143,7 +143,7 @@ async function sendPushToRoom(message: Message, senderEmail: string): Promise<vo
   );
 
   const payload = JSON.stringify({
-    title: `${message.username} in #${message.room}`,
+    title: `${message.username} בחדר #${message.room}`,
     body: message.text.length > 80 ? message.text.slice(0, 80) + '…' : message.text,
     room: message.room,
   });
