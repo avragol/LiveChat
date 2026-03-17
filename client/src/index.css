@@ -8,12 +8,13 @@
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    min-height: 100vh;
+    min-height: 100dvh;
     line-height: 1.6;
+    overflow: hidden;
 }
 
 #root {
-    min-height: 100vh;
+    min-height: 100dvh;
     width: 100%;
 }
 
@@ -36,7 +37,7 @@ input, textarea {
    Login Page
 ───────────────────────────────────────── */
 .login-container {
-    min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -64,7 +65,9 @@ input, textarea {
    Chat Layout — Desktop First
 ───────────────────────────────────────── */
 .chat-container {
-    height: 100vh;
+    height: 100dvh;
+    position: fixed;
+    inset: 0;
     display: flex;
     background: white;
     position: relative;
@@ -356,18 +359,9 @@ input, textarea {
     -webkit-overflow-scrolling: touch;
 }
 
-.message {
-    margin-bottom: 16px;
-    display: flex;
-}
-
-/* Issue #23 — consecutive messages from same user */
-.message.grouped {
-    margin-bottom: 2px;
-}
-
 .message.system {
     justify-content: center;
+    margin-bottom: 8px;
 }
 
 .system-message {
@@ -378,40 +372,98 @@ input, textarea {
     font-size: 13px;
 }
 
-.message-bubble {
-    max-width: 70%;
-    padding: 12px 16px;
-    border-radius: 18px;
-    word-wrap: break-word;
-    word-break: break-word;
+/* ── Message Groups (Issue #33) ── */
+.message-group {
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
 }
 
-.message-bubble.own {
-    background: #3b82f6;
-    color: white;
-    margin-inline-start: auto;
+.message-group.own {
+    align-items: flex-end;
 }
 
-.message-bubble.other {
-    background: white;
-    color: #374151;
-    border: 1px solid #e5e7eb;
+.message-group.other {
+    align-items: flex-start;
 }
 
-.message-sender {
+.message-group-header {
     font-size: 12px;
     font-weight: 600;
     margin-bottom: 4px;
-    opacity: 0.8;
+    padding-inline-start: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
-.message-text {
-    margin-bottom: 4px;
-}
-
-.message-time {
+.message-group-time {
     font-size: 11px;
+    font-weight: 400;
+    color: #9ca3af;
+}
+
+.message-group-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-width: 70%;
+}
+
+.message-group.own .message-group-body {
+    align-items: flex-end;
+}
+
+.message-group.other .message-group-body {
+    align-items: flex-start;
+}
+
+.message-line {
+    padding: 8px 14px;
+    border-radius: 18px;
+    word-wrap: break-word;
+    word-break: break-word;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.message-line.own {
+    background: #3b82f6;
+    color: white;
+    border-bottom-right-radius: 6px;
+}
+
+.message-line.other {
+    background: white;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+    border-bottom-left-radius: 6px;
+}
+
+/* first/last radius in group */
+.message-group.own .message-line:not(:last-child) {
+    border-bottom-right-radius: 4px;
+}
+.message-group.own .message-line:not(:first-child) {
+    border-top-right-radius: 4px;
+}
+.message-group.other .message-line:not(:last-child) {
+    border-bottom-left-radius: 4px;
+}
+.message-group.other .message-line:not(:first-child) {
+    border-top-left-radius: 4px;
+}
+
+.message-line-text {
+    line-height: 1.4;
+}
+
+.message-line-timestamp {
+    font-size: 10px;
     opacity: 0.6;
+    align-self: flex-end;
 }
 
 .typing-indicator {
@@ -815,4 +867,34 @@ body {
   }
 }
 
+/* ── Connecting screen (Issue #34) ── */
+.connecting-screen {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    gap: 16px;
+}
+
+.connecting-spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.connecting-text {
+    color: white;
+    font-size: 16px;
+    font-weight: 500;
+    opacity: 0.9;
+}
 
