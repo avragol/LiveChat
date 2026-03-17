@@ -362,6 +362,42 @@ io.on('connection', (socket: Socket) => {
     console.log(`🏠 Room created: ${name} by ${user.username}`);
   });
 
+  // ── Rename room (Issue #26) ──────────────────────────────────────────────────
+  socket.on('rename-room', async ({ oldName, newName }: { oldName: string; newName: string }) => {
+    const user = authenticatedUsers.get(socket.id);
+    if (!user) { socket.emit('room-rename-error', 'לא מחובר'); return; }
+
+    const trimmed = (newName ?? '').trim();
+    if (!trimmed || trimmed.length > 30) {
+      socket.emit('room-rename-error', 'שם חדר לא תקין');
+      return;
+    }
+    if (!(await roomExists(oldName))) {
+      socket.emit('room-rename-error', 'החדר לא קיים');
+      return;
+    }
+    if (trimmed !== oldName && await roomExists(trimmed)) {
+      socket.emit('room-rename-error', 'שם זה כבר תפוס');
+      return;
+    }
+    if (trimmed === oldName) return; // no-op
+
+    await renameRoom(oldName, trimmed);
+    console.log(`✏️  Room renamed: "${oldName}" → "${trimmed}" by ${user.username}`);
+
+    // Update in-memory room tracking for all connected users
+    authenticatedUsers.forEach((u, sid) => {
+      if (u.room === oldName) {
+        authenticatedUsers.set(sid, { ...u, room: trimmed });
+      }
+    });
+
+    // Broadcast to everyone
+    io.emit('room-renamed', { oldName, newName: trimmed });
+    const updatedRooms = await getRooms();
+    io.emit('room-list-update', updatedRooms);
+  });
+
   socket.on('disconnect', () => {
     const user = authenticatedUsers.get(socket.id);
     if (user?.room) {

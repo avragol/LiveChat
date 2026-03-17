@@ -162,15 +162,15 @@ input, textarea {
 
 .room-item {
     width: 100%;
-    padding: 16px 20px;
+    padding: 8px 12px 8px 20px;
     border: none;
     background: none;
     display: flex;
     align-items: center;
-    gap: 12px;
-    cursor: pointer;
+    gap: 8px;
     transition: background 0.2s;
     text-align: right;
+    position: relative;
 }
 
 .room-item:hover {
@@ -180,6 +180,62 @@ input, textarea {
 .room-item.active {
     background: #eff6ff;
     border-inline-start: 4px solid #3b82f6;
+}
+
+/* The main clickable button inside room-item */
+.room-item-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: right;
+    padding: 8px 0;
+    min-width: 0;
+}
+
+/* Action icons (rename + notif) */
+.room-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.room-rename-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+    line-height: 1;
+}
+
+.room-item:hover .room-rename-btn {
+    opacity: 1;
+}
+
+/* Inline rename input */
+.room-edit-inline {
+    flex: 1;
+    min-width: 0;
+}
+
+.room-edit-input {
+    width: 100%;
+    border: 1px solid #3b82f6;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 14px;
+    outline: none;
+    background: white;
+    direction: rtl;
+    box-sizing: border-box;
 }
 
 .users-section {
@@ -303,6 +359,11 @@ input, textarea {
 .message {
     margin-bottom: 16px;
     display: flex;
+}
+
+/* Issue #23 — consecutive messages from same user */
+.message.grouped {
+    margin-bottom: 2px;
 }
 
 .message.system {
