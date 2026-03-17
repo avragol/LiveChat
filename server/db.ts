@@ -141,7 +141,7 @@ export async function getUserSession(email: string): Promise<{ email: string; di
     args: [email],
   });
   if (result.rows.length === 0) return null;
-  const row = result.rows[0];
+  const row = result.rows[0]!;
   return {
     email: row.email as string,
     displayName: row.display_name as string,
