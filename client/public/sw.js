@@ -54,14 +54,25 @@ self.addEventListener('push', (event) => {
 
   const data = event.data.json();
 
+  // Backup guard: if the app is open and the user is already viewing this room,
+  // the socket delivers the message in real-time — suppress the OS notification.
   event.waitUntil(
-    self.registration.showNotification(data.title, {
-      body: data.body,
-      icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
-      tag: `livechat-${data.room}`,
-      renotify: true,
-      data: { room: data.room },
+    clients.matchAll({ type: 'window', includeUncontrolled: false }).then((clientList) => {
+      const isAppFocused = clientList.some(
+        (client) => client.visibilityState === 'visible'
+      );
+      if (isAppFocused) {
+        // App is open — message already arrived via socket. No OS notification needed.
+        return;
+      }
+      return self.registration.showNotification(data.title, {
+        body: data.body,
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        tag: `livechat-${data.room}`,
+        renotify: true,
+        data: { room: data.room },
+      });
     })
   );
 });
@@ -78,3 +89,4 @@ self.addEventListener('notificationclick', (event) => {
     })
   );
 });
+

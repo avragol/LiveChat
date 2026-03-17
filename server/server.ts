@@ -79,16 +79,27 @@ async function sendPushToRoom(message: Message, senderEmail: string): Promise<vo
   const subscriptions = await getPushSubscriptionsForRoom(message.room, senderEmail);
   if (subscriptions.length === 0) return;
 
+  // Collect emails of users currently online in this room — they get the message
+  // via socket in real-time, so no push needed (avoids double-notification).
+  const onlineEmailsInRoom = new Set(
+    [...authenticatedUsers.values()]
+      .filter(u => u.room === message.room)
+      .map(u => u.email)
+  );
+
   const payload = JSON.stringify({
     title: `${message.username} in #${message.room}`,
     body: message.text.length > 80 ? message.text.slice(0, 80) + '…' : message.text,
     room: message.room,
   });
 
-  console.log(`🔔 Sending push to ${subscriptions.length} subscriber(s) in #${message.room}`);
+  const offlineSubscriptions = subscriptions.filter(({ email }) => !onlineEmailsInRoom.has(email));
+
+  if (offlineSubscriptions.length === 0) return;
+  console.log(`🔔 Sending push to ${offlineSubscriptions.length} offline subscriber(s) in #${message.room}`);
 
   await Promise.allSettled(
-    subscriptions.map(async ({ email, subscription }) => {
+    offlineSubscriptions.map(async ({ email, subscription }) => {
       try {
         await webpush.sendNotification(JSON.parse(subscription), payload);
       } catch (err: any) {
@@ -238,3 +249,4 @@ initDb().then(() => {
   console.error('Failed to initialize DB:', err);
   process.exit(1);
 });
+

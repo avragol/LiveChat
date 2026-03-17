@@ -357,7 +357,13 @@ input, textarea {
     font-style: italic;
     color: #6b7280;
     font-size: 14px;
-    padding: 4px 0 8px;
+    padding: 4px 12px 8px;
+    width: 100%;
+    white-space: normal;
+    word-break: break-word;
+    overflow: visible;
+    flex-shrink: 0;
+    box-sizing: border-box;
 }
 
 /* ─────────────────────────────────────────
@@ -747,4 +753,5 @@ body {
     padding-bottom: max(20px, env(safe-area-inset-bottom));
   }
 }
+
 
