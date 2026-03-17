@@ -8,7 +8,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { createHmac, timingSafeEqual } from 'crypto';
 import webpush from 'web-push';
 import {
-  initDb, getRooms, createRoom, roomExists, getRoomCount,
+  initDb, getRooms, createRoom, roomExists, getRoomCount, renameRoom,
   getRecentMessages, saveMessage,
   savePushSubscription, getPushSubscriptionsForRoom, deletePushSubscription,
   unsubscribeUserFromRoom,
